@@ -3,6 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware"
 import { defaultLayoutId } from "../constants/layouts"
 import type { Conversation, Participant } from "../types/conversation"
 import type { Message, MessageStatus, MessageType } from "../types/message"
+import { DEFAULT_MESSAGE_DELAY_MS } from "../types/message"
 import type { LayoutId, ThemeId } from "../types/layout"
 import { generateId } from "../utils/helpers"
 
@@ -24,7 +25,7 @@ export interface UiState {
   showChrome: boolean
   zoom: number
   isSidebarOpen: boolean
-  activePanel: "messages" | "participants" | "settings" | "export"
+  activePanel: "messages" | "participants" | "settings" | "export" | "video"
   autoFit: boolean
 }
 
@@ -75,6 +76,7 @@ interface ConversationStore {
     timestamp: string
     type: MessageType
     status: MessageStatus
+    delayMs?: number
   }) => void
   updateMessage: (messageId: string, updates: Partial<Message>) => void
   deleteMessage: (messageId: string) => void
@@ -235,6 +237,7 @@ const buildDefaultConversation = (): Conversation => {
       id: `m${index + 1}`,
       ...message,
       timestamp: new Date(firstTimestamp + index * 60_000).toISOString(),
+      delayMs: DEFAULT_MESSAGE_DELAY_MS,
     })),
     metadata: {
       createdAt: new Date(firstTimestamp).toISOString(),
@@ -397,6 +400,7 @@ export const useConversationStore = create<ConversationStore>()(
               {
                 id: generateId(),
                 ...payload,
+                delayMs: payload.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
               },
             ],
             metadata: {
@@ -569,7 +573,7 @@ export const useConversationStore = create<ConversationStore>()(
     {
       name: STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       migrate: (state) => {
         if (!state) return state
         const typed = state as ConversationStore
@@ -578,6 +582,10 @@ export const useConversationStore = create<ConversationStore>()(
           conversation: {
             ...typed.conversation,
             participants: normalizeParticipants(typed.conversation.participants),
+            messages: typed.conversation.messages.map((message) => ({
+              ...message,
+              delayMs: message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
+            })),
           },
           exportSettings: {
             ...defaultExportSettings,

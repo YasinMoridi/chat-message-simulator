@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import type { Message } from "@/types/message"
+import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 import type { Participant } from "@/types/conversation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,6 +27,7 @@ interface MessageFormProps {
     timestamp: string
     type: Message["type"]
     status: Message["status"]
+    delayMs: number
   }) => void
   onCancel?: () => void
 }
@@ -68,6 +70,9 @@ export const MessageForm = ({
   const [status, setStatus] = useState<Message["status"]>(initial?.status ?? "sent")
   const [imageUrl, setImageUrl] = useState(initial?.imageUrl ?? "")
   const [imageError, setImageError] = useState<string | null>(null)
+  const [delaySeconds, setDelaySeconds] = useState(
+    (initial?.delayMs ?? DEFAULT_MESSAGE_DELAY_MS) / 1000,
+  )
   const showAdvanced = advancedOpen ?? true
   const showAdvancedToggle = typeof advancedOpen === "boolean" && typeof onToggleAdvanced === "function"
   const previousDefaultRef = useRef(defaultSenderId)
@@ -155,6 +160,7 @@ export const MessageForm = ({
           timestamp: fromInputValue(timestamp),
           type,
           status,
+          delayMs: Math.round(Math.max(0, delaySeconds) * 1000),
         })
         if (resetOnSubmit && !initial) {
           setContent("")
@@ -164,6 +170,7 @@ export const MessageForm = ({
           setSenderId(resolveSenderId(defaultSenderId, participants))
           setImageUrl("")
           setImageError(null)
+          setDelaySeconds(DEFAULT_MESSAGE_DELAY_MS / 1000)
         }
       }}
     >
@@ -269,6 +276,22 @@ export const MessageForm = ({
                 value={timestamp}
                 onChange={(event) => setTimestamp(event.target.value)}
               />
+            </div>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Video delay (seconds)</Label>
+              <Input
+                type="number"
+                min={0}
+                step={0.1}
+                value={delaySeconds}
+                onChange={(event) => setDelaySeconds(Number(event.target.value))}
+              />
+              <p className="text-[11px] text-slate-500">
+                Time this message waits after the previous one before it appears in a video export.
+              </p>
             </div>
           </div>
 
