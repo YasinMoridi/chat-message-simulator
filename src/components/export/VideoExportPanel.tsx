@@ -9,11 +9,20 @@ import { layoutConfigs } from "@/constants/layouts"
 import { useConversationStore } from "@/store/conversationStore"
 import { ChatLayout } from "@/components/layout/ChatLayout"
 import { exportNodeToImage } from "@/utils/export"
-import { recordFramesToVideo, isVideoRecordingSupported, type VideoFrame } from "@/utils/videoExport"
+import {
+  recordFramesToVideo,
+  isVideoRecordingSupported,
+  isMp4MimeType,
+  downloadBlob,
+  type VideoFrame,
+} from "@/utils/videoExport"
+import { computeRevealTiming } from "@/utils/messageTiming"
 import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 
 /** How long the very last, fully-revealed frame stays on screen before the video ends. */
 const TRAILING_HOLD_MS = 1800
+/** Where your notification sound lives - see public/sounds/README.txt. */
+const NOTIFICATION_SOUND_URL = "/sounds/notification.mp3"
 
 const waitForNextPaint = () =>
   new Promise<void>((resolve) => {
@@ -36,10 +45,13 @@ export const VideoExportPanel = () => {
   const scrollRootRef = useRef<HTMLDivElement | null>(null)
 
   const [revealCount, setRevealCount] = useState(0)
+  const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
   const [isRendering, setIsRendering] = useState(false)
+  const [phase, setPhase] = useState<"capturing" | "encoding" | null>(null)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoMimeType, setVideoMimeType] = useState<string>("video/webm")
 
   const layout = layoutConfigs.find((item) => item.id === layoutId) ?? layoutConfigs[0]
   const theme = layout.themes.find((item) => item.id === themeId) ?? layout.themes[0]
@@ -59,6 +71,25 @@ export const VideoExportPanel = () => {
   )
 
   const supported = isVideoRecordingSupported()
+  const fileExtension = isMp4MimeType(videoMimeType) ? "mp4" : "webm"
+
+  const captureCurrentFrame = async () => {
+    await waitForNextPaint()
+    const scrollRoot = scrollRootRef.current
+    if (scrollRoot) {
+      scrollRoot.scrollTop = scrollRoot.scrollHeight
+    }
+    if (!stageRef.current) throw new Error("Preview stage is not ready.")
+    return exportNodeToImage(stageRef.current, {
+      presetId: exportSettings.presetId,
+      width: exportSettings.width,
+      height: exportSettings.height,
+      scale: exportSettings.scale,
+      format: "png",
+      quality: 0.95,
+      captureMode: "viewport",
+    })
+  }
 
   const runExport = async () => {
     if (!stageRef.current) return
@@ -70,54 +101,73 @@ export const VideoExportPanel = () => {
     setErrorMessage(null)
     setVideoUrl(null)
     setIsRendering(true)
-    setProgress({ done: 0, total: visibleMessages.length })
+    setPhase("capturing")
+
+    // Each non-system message contributes a "typing" frame + a "reveal" frame;
+    // system messages only get a reveal frame (no one is "typing" a system note).
+    const captureTotal = visibleMessages.reduce(
+      (total, message) => total + (message.type !== "system" ? 2 : 1),
+      0,
+    )
+    setProgress({ done: 0, total: captureTotal })
 
     try {
       const frames: VideoFrame[] = []
+      let captured = 0
 
-      // count = 0 -> empty thread, count = N -> every visible message shown.
-      for (let count = 0; count <= visibleMessages.length; count += 1) {
-        setRevealCount(count)
-        await waitForNextPaint()
+      setRevealCount(0)
+      setTypingSenderId(null)
 
-        const scrollRoot = scrollRootRef.current
-        if (scrollRoot) {
-          scrollRoot.scrollTop = scrollRoot.scrollHeight
+      for (let index = 0; index < visibleMessages.length; index += 1) {
+        const message = visibleMessages[index]
+        const { typingMs, restMs } = computeRevealTiming(message.delayMs)
+
+        if (message.type !== "system") {
+          setTypingSenderId(message.senderId)
+          const dataUrl = await captureCurrentFrame()
+          frames.push({ dataUrl, holdMs: typingMs })
+          captured += 1
+          setProgress({ done: captured, total: captureTotal })
         }
 
-        const dataUrl = await exportNodeToImage(stageRef.current, {
-          presetId: exportSettings.presetId,
-          width: exportSettings.width,
-          height: exportSettings.height,
-          scale: exportSettings.scale,
-          format: "png",
-          quality: 0.95,
-          captureMode: "viewport",
-        })
-
-        // The delay attached to message[count] is "how long to wait after the
-        // previous message before this one appears" - so it becomes the hold
-        // time for the frame that comes right before it becomes visible.
+        setTypingSenderId(null)
+        setRevealCount(index + 1)
+        const dataUrl = await captureCurrentFrame()
         const holdMs =
-          count < visibleMessages.length
-            ? visibleMessages[count]?.delayMs ?? DEFAULT_MESSAGE_DELAY_MS
-            : TRAILING_HOLD_MS
-
-        frames.push({ dataUrl, holdMs })
-        setProgress({ done: count, total: visibleMessages.length })
+          message.type === "system" ? message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS : restMs
+        frames.push({ dataUrl, holdMs, playSound: message.type !== "system" })
+        captured += 1
+        setProgress({ done: captured, total: captureTotal })
       }
 
-      const blob = await recordFramesToVideo(
+      // Hold on the final, fully-revealed frame a bit before the video ends.
+      if (frames.length > 0) {
+        frames.push({ dataUrl: frames[frames.length - 1].dataUrl, holdMs: TRAILING_HOLD_MS })
+      }
+
+      setPhase("encoding")
+      setProgress({ done: 0, total: frames.length })
+      const { blob, mimeType } = await recordFramesToVideo(
         frames,
-        { width: exportSettings.width, height: exportSettings.height, fps: 30 },
+        {
+          width: exportSettings.width,
+          height: exportSettings.height,
+          fps: 30,
+          soundUrl: NOTIFICATION_SOUND_URL,
+        },
         (done, total) => setProgress({ done, total }),
       )
+      setVideoMimeType(mimeType)
       setVideoUrl(URL.createObjectURL(blob))
+      // Download automatically as soon as the video is ready - no extra click needed.
+      downloadBlob(blob, `chat-video.${isMp4MimeType(mimeType) ? "mp4" : "webm"}`)
     } catch (error) {
       console.error("Video export failed", error)
       setErrorMessage(error instanceof Error ? error.message : "Video export failed.")
     } finally {
       setIsRendering(false)
+      setPhase(null)
+      setTypingSenderId(null)
       setRevealCount(visibleMessages.length)
     }
   }
@@ -126,7 +176,7 @@ export const VideoExportPanel = () => {
     if (!videoUrl) return
     const link = document.createElement("a")
     link.href = videoUrl
-    link.download = "chat-video.webm"
+    link.download = `chat-video.${fileExtension}`
     link.click()
   }
 
@@ -135,8 +185,8 @@ export const VideoExportPanel = () => {
       <div>
         <h3 className="text-sm font-semibold text-slate-900">Video export</h3>
         <p className="text-xs text-slate-500">
-          Renders the conversation as a video, revealing one message at a time using each
-          message&apos;s video delay from the message editor.
+          Renders the conversation as a video: typing dots, then each message, using every
+          message&apos;s delay from the message editor.
         </p>
       </div>
 
@@ -197,7 +247,11 @@ export const VideoExportPanel = () => {
         ) : (
           <Clapperboard className="h-4 w-4" />
         )}
-        {isRendering ? `Rendering ${progress.done}/${progress.total}...` : "Render video"}
+        {isRendering
+          ? phase === "encoding"
+            ? `Encoding video ${progress.done}/${progress.total}...`
+            : `Capturing frames ${progress.done}/${progress.total}...`
+          : "Render video"}
       </Button>
 
       {errorMessage ? (
@@ -207,14 +261,22 @@ export const VideoExportPanel = () => {
       {videoUrl ? (
         <div className="space-y-2">
           <video src={videoUrl} controls className="w-full rounded-xl border border-slate-200" />
+          <p className="text-[11px] text-emerald-700">
+            Downloaded automatically as chat-video.{fileExtension}. Use the button below if you
+            need it again.
+          </p>
           <Button variant="outline" onClick={handleDownload} className="w-full gap-2">
             <Download className="h-4 w-4" />
-            Download video (.webm)
+            Download video (.{fileExtension}) again
           </Button>
-          <p className="text-[11px] text-slate-500">
-            WebM plays natively in Chrome, Edge, and Firefox. Convert it to MP4 with a tool like
-            ffmpeg or HandBrake if you need another format (e.g. for older iOS Safari).
-          </p>
+          {fileExtension === "webm" ? (
+            <p className="text-[11px] text-slate-500">
+              This browser can only record WebM. It plays natively in Chrome, Edge, and Firefox.
+              Convert it to MP4 with a tool like ffmpeg (<code>ffmpeg -i chat-video.webm
+              chat-video.mp4</code>) or HandBrake if you need a real .mp4 file (e.g. for older iOS
+              Safari or apps that reject WebM).
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -232,6 +294,7 @@ export const VideoExportPanel = () => {
             backgroundColor={backgroundColor}
             conversationMode="scroll"
             conversationContainerRef={scrollRootRef}
+            typingSenderId={typingSenderId}
           />
         </div>
       </div>

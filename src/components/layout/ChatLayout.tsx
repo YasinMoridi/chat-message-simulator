@@ -17,6 +17,8 @@ interface ChatLayoutProps {
   conversationMode?: "scroll" | "expanded"
   conversationContainerRef?: React.Ref<HTMLDivElement>
   conversationContentRef?: React.Ref<HTMLDivElement>
+  /** senderId of whoever should show the animated "..." bubble right now, if any. */
+  typingSenderId?: string | null
 }
 
 const groupStatusLabel = (participants: Conversation["participants"]) => {
@@ -66,6 +68,7 @@ export const ChatLayout = ({
   conversationMode = "scroll",
   conversationContainerRef,
   conversationContentRef,
+  typingSenderId,
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
@@ -138,6 +141,7 @@ export const ChatLayout = ({
           mode={conversationMode}
           containerRef={conversationContainerRef}
           contentRef={conversationContentRef}
+          typingSenderId={typingSenderId}
         />
       </div>
       {showChrome ? <MessageInput layout={layout} /> : null}

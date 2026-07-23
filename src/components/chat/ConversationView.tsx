@@ -2,6 +2,7 @@ import type { Message } from "@/types/message"
 import type { Participant } from "@/types/conversation"
 import type { LayoutConfig } from "@/types/layout"
 import { MessageBubble } from "@/components/chat/MessageBubble"
+import { TypingIndicator } from "@/components/chat/TypingIndicator"
 import { formatDateSeparator, formatInstagramDateSeparator } from "@/utils/helpers"
 import { cn } from "@/utils/cn"
 
@@ -13,6 +14,8 @@ interface ConversationViewProps {
   mode?: "scroll" | "expanded"
   containerRef?: React.Ref<HTMLDivElement>
   contentRef?: React.Ref<HTMLDivElement>
+  /** senderId of whoever should show the animated "..." bubble right now, if any. */
+  typingSenderId?: string | null
 }
 
 export const ConversationView = ({
@@ -23,6 +26,7 @@ export const ConversationView = ({
   mode = "scroll",
   containerRef,
   contentRef,
+  typingSenderId,
 }: ConversationViewProps) => {
   const visibleMessages = messages.filter((message) => !message.isHidden)
   const isWhatsApp = layout.id === "whatsapp"
@@ -133,6 +137,12 @@ export const ConversationView = ({
             </div>
           )
         })}
+        {typingSenderId ? (
+          <TypingIndicator
+            sender={participants.find((participant) => participant.id === typingSenderId)}
+            layout={layout}
+          />
+        ) : null}
       </div>
     </div>
   )

@@ -7,12 +7,15 @@ import {
   Image,
   MessagesSquare,
   Minus,
+  Play,
   Plus,
   ScreenShare,
   SlidersHorizontal,
   SquareStack,
+  Square,
   Users,
 } from "lucide-react"
+import { useConversationPlayback } from "@/hooks/useConversationPlayback"
 import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
@@ -79,6 +82,22 @@ export const MainLayout = () => {
     fullExportHeight: 0,
     hasOverflow: false,
   })
+
+  const visiblePlaybackMessages = useMemo(
+    () => conversation.messages.filter((message) => !message.isHidden),
+    [conversation.messages],
+  )
+  const { revealCount, typingSenderId, isPlaying, play, stop } = useConversationPlayback(
+    visiblePlaybackMessages,
+  )
+  // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
+  const playbackConversation = useMemo(
+    () => ({
+      ...conversation,
+      messages: isPlaying ? visiblePlaybackMessages.slice(0, revealCount) : conversation.messages,
+    }),
+    [conversation, isPlaying, visiblePlaybackMessages, revealCount],
+  )
 
   const handleQuickExport = async (mode: "download" | "preview") => {
     const target = exportSettings.captureMode === "full" ? fullExportRef.current : exportRef.current
@@ -447,6 +466,17 @@ export const MainLayout = () => {
                   </div>
                   <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 sm:w-auto sm:flex-wrap">
                     <Button
+                      variant={isPlaying ? "outline" : "default"}
+                      size="sm"
+                      disabled={visiblePlaybackMessages.length === 0}
+                      onClick={() => (isPlaying ? stop() : play())}
+                    >
+                      {isPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                      <span className="hidden sm:inline">
+                        {isPlaying ? "Stop" : "Play conversation"}
+                      </span>
+                    </Button>
+                    <Button
                       variant="outline"
                       size="sm"
                       onClick={() => setUi({ showChrome: !ui.showChrome })}
@@ -546,7 +576,7 @@ export const MainLayout = () => {
                           style={{ width: exportSettings.width, height: exportSettings.height }}
                         >
                           <ChatLayout
-                            conversation={conversation}
+                            conversation={playbackConversation}
                             layout={layout}
                             theme={theme}
                             showChrome={ui.showChrome}
@@ -557,6 +587,7 @@ export const MainLayout = () => {
                             conversationMode="scroll"
                             conversationContainerRef={previewConversationRef}
                             conversationContentRef={previewConversationContentRef}
+                            typingSenderId={typingSenderId}
                           />
                         </div>
                       </div>
