@@ -145,6 +145,7 @@ export const ConversationView = ({
             sender={participants.find((participant) => participant.id === typingSenderId)}
             layout={layout}
             frozenPhaseMs={typingPhaseMs}
+            isOwn={typingSenderId === selfId}
           />
         ) : null}
       </div>

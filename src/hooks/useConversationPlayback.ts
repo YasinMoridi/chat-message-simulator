@@ -7,9 +7,9 @@ interface UseConversationPlaybackOptions {
   /** Play the little "pop" sound whenever a new message is revealed. */
   soundEnabled?: boolean
   /**
-   * Id of the "you" participant. Typing dots represent someone else composing
-   * a message, so they should never show up for your own outgoing messages -
-   * only for the other participant's.
+   * Id of the "you" participant. No longer used to gate the typing bubble
+   * (it now shows for every sender, including yourself) - kept so callers
+   * don't need to change their call site, and in case it's needed again.
    */
   selfId?: string
 }
@@ -61,9 +61,9 @@ export const useConversationPlayback = (
       const message = messages[index]
       const { typingMs, restMs } = computeRevealTiming(message.delayMs)
 
-      // Only show typing dots for incoming messages from the other person;
-      // your own outgoing messages never show a typing bubble for yourself.
-      if (message.type !== "system" && message.senderId !== selfId) {
+      // Show typing dots for whoever is about to send the next message,
+      // including your own outgoing messages (rendered on the right side).
+      if (message.type !== "system") {
         setTypingSenderId(message.senderId)
       }
 

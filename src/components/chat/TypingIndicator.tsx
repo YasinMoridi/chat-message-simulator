@@ -14,6 +14,8 @@ interface TypingIndicatorProps {
    * animation and the dots look frozen in the exported video.
    */
   frozenPhaseMs?: number
+  /** True when the "self" participant is the one typing - aligns the bubble right. */
+  isOwn?: boolean
 }
 
 /** Matches the `1.2s` duration on `@keyframes typing-bounce` in index.css. */
@@ -26,7 +28,7 @@ export const TYPING_DOT_BASE_DELAYS_MS = [0, 150, 300]
  * native typing indicator of chat apps. Reuses the same bubble radius/shadow
  * rules as MessageBubble so it blends into every layout.
  */
-export const TypingIndicator = ({ sender, layout, frozenPhaseMs }: TypingIndicatorProps) => {
+export const TypingIndicator = ({ sender, layout, frozenPhaseMs, isOwn }: TypingIndicatorProps) => {
   const isWhatsApp = layout.id === "whatsapp"
   const isIMessage = layout.id === "imessage"
   const isMessenger = layout.id === "messenger"
@@ -48,14 +50,14 @@ export const TypingIndicator = ({ sender, layout, frozenPhaseMs }: TypingIndicat
   const isFrozen = frozenPhaseMs !== undefined
 
   return (
-    <div className="flex w-full flex-col items-start gap-1">
+    <div className={cn("flex w-full flex-col gap-1", isOwn ? "items-end" : "items-start")}>
       <div
         className={cn(
           "flex items-center gap-1 px-3 py-2.5 shadow-sm",
           bubbleRadius,
         )}
-        style={{ backgroundColor: "var(--bubble-received)" }}
-        aria-label={`${sender?.name ?? "Someone"} is typing`}
+        style={{ backgroundColor: isOwn ? "var(--bubble-sent)" : "var(--bubble-received)" }}
+        aria-label={isOwn ? "You are typing" : `${sender?.name ?? "Someone"} is typing`}
       >
         {TYPING_DOT_BASE_DELAYS_MS.map((baseDelayMs, index) => (
           <span
@@ -63,15 +65,19 @@ export const TypingIndicator = ({ sender, layout, frozenPhaseMs }: TypingIndicat
             className="typing-dot"
             // Inline styles win over the stylesheet's `:nth-child` rule, so
             // when frozen we can pin each dot to an exact, deterministic
-            // point in the bounce cycle via a negative animation-delay.
-            style={
-              isFrozen
+            // point in the bounce cycle via a negative animation-delay. We
+            // also override the dot color on the "own" bubble since it's
+            // often a saturated color (WhatsApp green, iMessage blue, etc.)
+            // where the default muted-gray dot wouldn't have enough contrast.
+            style={{
+              ...(isOwn ? { backgroundColor: "var(--bubble-sent-text)", opacity: 0.6 } : {}),
+              ...(isFrozen
                 ? {
                     animationDelay: `${baseDelayMs - frozenPhaseMs!}ms`,
                     animationPlayState: "paused",
                   }
-                : undefined
-            }
+                : {}),
+            }}
           />
         ))}
       </div>
