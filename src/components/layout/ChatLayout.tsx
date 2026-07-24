@@ -19,6 +19,8 @@ interface ChatLayoutProps {
   conversationContentRef?: React.Ref<HTMLDivElement>
   /** senderId of whoever should show the animated "..." bubble right now, if any. */
   typingSenderId?: string | null
+  /** See TypingIndicator's frozenPhaseMs - only used during video export. */
+  typingPhaseMs?: number
 }
 
 const groupStatusLabel = (participants: Conversation["participants"]) => {
@@ -69,6 +71,7 @@ export const ChatLayout = ({
   conversationContainerRef,
   conversationContentRef,
   typingSenderId,
+  typingPhaseMs,
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
@@ -142,6 +145,7 @@ export const ChatLayout = ({
           containerRef={conversationContainerRef}
           contentRef={conversationContentRef}
           typingSenderId={typingSenderId}
+          typingPhaseMs={typingPhaseMs}
         />
       </div>
       {showChrome ? <MessageInput layout={layout} /> : null}

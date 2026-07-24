@@ -16,6 +16,8 @@ interface ConversationViewProps {
   contentRef?: React.Ref<HTMLDivElement>
   /** senderId of whoever should show the animated "..." bubble right now, if any. */
   typingSenderId?: string | null
+  /** See TypingIndicator's frozenPhaseMs - only used during video export. */
+  typingPhaseMs?: number
 }
 
 export const ConversationView = ({
@@ -27,6 +29,7 @@ export const ConversationView = ({
   containerRef,
   contentRef,
   typingSenderId,
+  typingPhaseMs,
 }: ConversationViewProps) => {
   const visibleMessages = messages.filter((message) => !message.isHidden)
   const isWhatsApp = layout.id === "whatsapp"
@@ -141,6 +144,7 @@ export const ConversationView = ({
           <TypingIndicator
             sender={participants.find((participant) => participant.id === typingSenderId)}
             layout={layout}
+            frozenPhaseMs={typingPhaseMs}
           />
         ) : null}
       </div>

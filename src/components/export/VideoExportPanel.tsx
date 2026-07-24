@@ -17,6 +17,7 @@ import {
   type VideoFrame,
 } from "@/utils/videoExport"
 import { computeRevealTiming } from "@/utils/messageTiming"
+import { TYPING_ANIMATION_CYCLE_MS } from "@/components/chat/TypingIndicator"
 import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 
 /** How long the very last, fully-revealed frame stays on screen before the video ends. */
@@ -63,6 +64,7 @@ export const VideoExportPanel = () => {
 
   const [revealCount, setRevealCount] = useState(0)
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
+  const [typingPhaseMs, setTypingPhaseMs] = useState(0)
   const [isRendering, setIsRendering] = useState(false)
   const [phase, setPhase] = useState<"capturing" | "encoding" | null>(null)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
@@ -145,10 +147,16 @@ export const VideoExportPanel = () => {
           setTypingSenderId(message.senderId)
           // Capture several snapshots across the typing window instead of one
           // long-held frame, so the bouncing dots actually animate on export.
+          // Each snapshot pins the dots to a different, deterministic point
+          // in their bounce cycle (see TypingIndicator's frozenPhaseMs) -
+          // relying on "real time passing" between snapshots doesn't work
+          // here because every capture is a fresh DOM clone whose animation
+          // clock restarts at zero the instant it's attached.
           const typingHolds = buildTypingHolds(typingMs)
-          for (const holdMs of typingHolds) {
+          for (let step = 0; step < typingHolds.length; step += 1) {
+            setTypingPhaseMs((step * TYPING_FRAME_STEP_MS) % TYPING_ANIMATION_CYCLE_MS)
             const dataUrl = await captureCurrentFrame()
-            frames.push({ dataUrl, holdMs })
+            frames.push({ dataUrl, holdMs: typingHolds[step] })
             captured += 1
             setProgress({ done: captured, total: captureTotal })
           }
@@ -319,6 +327,7 @@ export const VideoExportPanel = () => {
             conversationMode="scroll"
             conversationContainerRef={scrollRootRef}
             typingSenderId={typingSenderId}
+            typingPhaseMs={typingPhaseMs}
           />
         </div>
       </div>
