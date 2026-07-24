@@ -6,12 +6,6 @@ import { playMessageSound } from "@/utils/sound"
 interface UseConversationPlaybackOptions {
   /** Play the little "pop" sound whenever a new message is revealed. */
   soundEnabled?: boolean
-  /**
-   * Id of the "you" participant. Used to gate the notification banner (you
-   * don't get an OS notification for your own outgoing messages) - kept
-   * optional since it used to only matter for the typing bubble.
-   */
-  selfId?: string
 }
 
 /** How long the notification banner stays up before it slides away. */
@@ -21,7 +15,7 @@ const BANNER_EXIT_MS = 300
 
 export const useConversationPlayback = (
   messages: Message[],
-  { soundEnabled = true, selfId }: UseConversationPlaybackOptions = {},
+  { soundEnabled = true }: UseConversationPlaybackOptions = {},
 ) => {
   const [revealCount, setRevealCount] = useState(messages.length)
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
@@ -103,7 +97,8 @@ export const useConversationPlayback = (
 
       // Show typing dots for whoever is about to send the next message,
       // including your own outgoing messages (rendered on the right side).
-      if (message.type !== "system") {
+      // Notification entries aren't "typed" - they just pop in.
+      if (message.type !== "system" && message.type !== "notification") {
         setTypingSenderId(message.senderId)
       }
 
@@ -113,9 +108,9 @@ export const useConversationPlayback = (
         if (soundEnabled && message.type !== "system") {
           playMessageSound()
         }
-        // Only incoming messages get an OS-style notification - you don't
-        // see a notification for a message you just sent yourself.
-        if (message.type !== "system" && message.senderId !== selfId) {
+        // Only entries explicitly authored as "Notification" trigger the
+        // OS-style banner - regular chat messages never do.
+        if (message.type === "notification") {
           showBanner(message, restMs)
         }
 

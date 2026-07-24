@@ -114,8 +114,17 @@ export const ConversationView = ({
           const isOwn = message.senderId === selfId
           const nextMessage = visibleMessages[index + 1]
           const isLastFromSender =
-            !nextMessage || nextMessage.senderId !== message.senderId || nextMessage.type === "system"
+            !nextMessage ||
+            nextMessage.senderId !== message.senderId ||
+            nextMessage.type === "system" ||
+            nextMessage.type === "notification"
           const showAvatar = (isInstagram || isMessenger) && !isOwn && isLastFromSender
+
+          if (message.type === "notification") {
+            // Notification entries only trigger the OS banner - they never
+            // show up as a bubble in the chat log itself.
+            return null
+          }
 
           if (message.type === "system") {
             return (

@@ -18,7 +18,7 @@ import { useConversationPlayback } from "@/hooks/useConversationPlayback"
 import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
-import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
+import { ChatLayout } from "@/components/layout/ChatLayout"
 import {
   NotificationBanner,
   notificationPlatformForLayout,
@@ -90,9 +90,7 @@ export const MainLayout = () => {
     [conversation.messages],
   )
   const { revealCount, typingSenderId, isPlaying, play, stop, bannerMessage, bannerVisible } =
-    useConversationPlayback(visiblePlaybackMessages, {
-      selfId: getSelfParticipantId(conversation.participants, activeParticipantId),
-    })
+    useConversationPlayback(visiblePlaybackMessages)
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
     : undefined
@@ -161,6 +159,12 @@ export const MainLayout = () => {
   )
   const hasDark = layout.themes.some((themeEntry) => themeEntry.id === "dark")
   const isDark = themeId === "dark"
+  const bannerOverride = bannerMessage?.notificationOverride?.enabled
+    ? bannerMessage.notificationOverride
+    : undefined
+  const bannerSenderName = bannerOverride?.senderName || bannerSender?.name || "New message"
+  const bannerAppName = bannerOverride?.appName || layout.name
+  const bannerAvatarUrl = bannerOverride ? bannerOverride.avatarUrl : bannerSender?.avatarUrl
 
   useEffect(() => {
     if (typeof window === "undefined") return
@@ -590,15 +594,15 @@ export const MainLayout = () => {
                           {ui.showNotificationBanner && bannerMessage ? (
                             <NotificationBanner
                               platform={notificationPlatformForLayout(layout.id)}
-                              appName={layout.name}
+                              appName={bannerAppName}
                               appColor={theme.colors.accent}
-                              senderName={bannerSender?.name ?? "New message"}
+                              senderName={bannerSenderName}
                               messageText={
                                 bannerMessage.type === "image"
                                   ? "Sent a photo"
                                   : bannerMessage.content
                               }
-                              avatarUrl={bannerSender?.avatarUrl}
+                              avatarUrl={bannerAvatarUrl}
                               visible={bannerVisible}
                             />
                           ) : null}

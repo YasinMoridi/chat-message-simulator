@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/utils/cn"
 import { readFileAsDataUrl } from "@/utils/helpers"
@@ -28,6 +29,7 @@ interface MessageFormProps {
     type: Message["type"]
     status: Message["status"]
     delayMs: number
+    notificationOverride?: Message["notificationOverride"]
   }) => void
   onCancel?: () => void
 }
@@ -72,6 +74,18 @@ export const MessageForm = ({
   const [imageError, setImageError] = useState<string | null>(null)
   const [delaySeconds, setDelaySeconds] = useState(
     (initial?.delayMs ?? DEFAULT_MESSAGE_DELAY_MS) / 1000,
+  )
+  const [notificationOverrideEnabled, setNotificationOverrideEnabled] = useState(
+    initial?.notificationOverride?.enabled ?? false,
+  )
+  const [notificationSenderName, setNotificationSenderName] = useState(
+    initial?.notificationOverride?.senderName ?? "",
+  )
+  const [notificationAppName, setNotificationAppName] = useState(
+    initial?.notificationOverride?.appName ?? "",
+  )
+  const [notificationAvatarUrl, setNotificationAvatarUrl] = useState(
+    initial?.notificationOverride?.avatarUrl ?? "",
   )
   const showAdvanced = advancedOpen ?? true
   const showAdvancedToggle = typeof advancedOpen === "boolean" && typeof onToggleAdvanced === "function"
@@ -161,6 +175,15 @@ export const MessageForm = ({
           type,
           status,
           delayMs: Math.round(Math.max(0, delaySeconds) * 1000),
+          notificationOverride:
+            type === "notification" && notificationOverrideEnabled
+              ? {
+                  enabled: true,
+                  senderName: notificationSenderName.trim() || undefined,
+                  appName: notificationAppName.trim() || undefined,
+                  avatarUrl: notificationAvatarUrl.trim() || undefined,
+                }
+              : { enabled: false },
         })
         if (resetOnSubmit && !initial) {
           setContent("")
@@ -171,6 +194,10 @@ export const MessageForm = ({
           setImageUrl("")
           setImageError(null)
           setDelaySeconds(DEFAULT_MESSAGE_DELAY_MS / 1000)
+          setNotificationOverrideEnabled(false)
+          setNotificationSenderName("")
+          setNotificationAppName("")
+          setNotificationAvatarUrl("")
         }
       }}
     >
@@ -281,22 +308,6 @@ export const MessageForm = ({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label>Video delay (seconds)</Label>
-              <Input
-                type="number"
-                min={0}
-                step={0.1}
-                value={delaySeconds}
-                onChange={(event) => setDelaySeconds(Number(event.target.value))}
-              />
-              <p className="text-[11px] text-slate-500">
-                Time this message waits after the previous one before it appears in a video export.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-2">
               <Label>Type</Label>
               <Select
                 value={type}
@@ -315,8 +326,15 @@ export const MessageForm = ({
                   <SelectItem value="text">Text</SelectItem>
                   <SelectItem value="system">System</SelectItem>
                   <SelectItem value="image">Image</SelectItem>
+                  <SelectItem value="notification">Notification</SelectItem>
                 </SelectContent>
               </Select>
+              {type === "notification" ? (
+                <p className="text-[11px] text-slate-500">
+                  Pops in as an OS notification banner at this point in playback - it never
+                  appears as a bubble in the chat itself.
+                </p>
+              ) : null}
             </div>
             <div className="space-y-2">
               <Label>Status</Label>
@@ -332,6 +350,68 @@ export const MessageForm = ({
               </Select>
             </div>
           </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Reveal delay (seconds)</Label>
+              <Input
+                type="number"
+                min={0}
+                step={0.1}
+                value={delaySeconds}
+                onChange={(event) => setDelaySeconds(Number(event.target.value))}
+              />
+              <p className="text-[11px] text-slate-500">
+                Time this waits after the previous entry before it appears during playback.
+              </p>
+            </div>
+          </div>
+
+          {type === "notification" ? (
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="space-y-0.5">
+                  <Label>Show as a different name/app</Label>
+                  <p className="text-[11px] text-slate-500">
+                    By default the notification uses the Sender above. Turn this on to display a
+                    different name, app, or avatar instead.
+                  </p>
+                </div>
+                <Switch
+                  checked={notificationOverrideEnabled}
+                  onCheckedChange={setNotificationOverrideEnabled}
+                />
+              </div>
+              {notificationOverrideEnabled ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Notification sender name</Label>
+                    <Input
+                      value={notificationSenderName}
+                      onChange={(event) => setNotificationSenderName(event.target.value)}
+                      placeholder="e.g. Sarah"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Notification app name</Label>
+                    <Input
+                      value={notificationAppName}
+                      onChange={(event) => setNotificationAppName(event.target.value)}
+                      placeholder="e.g. Instagram"
+                    />
+                  </div>
+                  <div className="space-y-2 sm:col-span-2">
+                    <Label>Notification avatar URL (optional)</Label>
+                    <Input
+                      value={notificationAvatarUrl}
+                      onChange={(event) => setNotificationAvatarUrl(event.target.value)}
+                      placeholder="https://..."
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </>
       ) : null}
 

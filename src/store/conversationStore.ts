@@ -79,6 +79,7 @@ interface ConversationStore {
     type: MessageType
     status: MessageStatus
     delayMs?: number
+    notificationOverride?: Message["notificationOverride"]
   }) => void
   updateMessage: (messageId: string, updates: Partial<Message>) => void
   deleteMessage: (messageId: string) => void
