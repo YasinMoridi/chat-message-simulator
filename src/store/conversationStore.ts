@@ -27,7 +27,7 @@ export interface UiState {
   showNotificationBanner: boolean
   zoom: number
   isSidebarOpen: boolean
-  activePanel: "messages" | "participants" | "settings" | "export" | "video"
+  activePanel: "messages" | "participants" | "settings" | "export"
   autoFit: boolean
 }
 

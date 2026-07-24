@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
-  Clapperboard,
   Download,
   Eye,
   EyeOff,
@@ -28,7 +27,6 @@ import { Toolbar } from "@/components/layout/Toolbar"
 import { ParticipantManager } from "@/components/editor/ParticipantManager"
 import { ConversationBuilder } from "@/components/editor/ConversationBuilder"
 import { ExportPanel } from "@/components/export/ExportPanel"
-import { VideoExportPanel } from "@/components/export/VideoExportPanel"
 import { SettingsPanel } from "@/components/layout/SettingsPanel"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -370,13 +368,6 @@ export const MainLayout = () => {
       description: "Set size, format, and download exports.",
       meta: `${exportSettings.width} x ${exportSettings.height}`,
     },
-    {
-      id: "video",
-      label: "Video",
-      icon: Clapperboard,
-      description: "Render an animated video of the conversation.",
-      meta: `${visibleMessageCount} messages`,
-    },
   ] as const
   const activePanelIndex = panelTabs.findIndex((tab) => tab.id === ui.activePanel)
   const resolvedActivePanelIndex = activePanelIndex === -1 ? 0 : activePanelIndex
@@ -459,7 +450,6 @@ export const MainLayout = () => {
                     screenScrollTops={screenScrollTops}
                   />
                 ) : null}
-                {ui.activePanel === "video" ? <VideoExportPanel /> : null}
               </CardContent>
             </Card>
           </aside>
