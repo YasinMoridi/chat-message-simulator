@@ -80,8 +80,21 @@ export const recordFramesToVideo = async (
   const canvas = document.createElement("canvas")
   canvas.width = settings.width
   canvas.height = settings.height
+  // captureStream() only keeps delivering fresh frames on a fixed timer while
+  // the canvas is actually part of the document. A detached canvas can get
+  // "frozen" by the browser after the first paint, so every frame we capture
+  // afterwards ends up being that same first frame. Keep it in the DOM (but
+  // fully hidden) for the duration of the recording.
+  Object.assign(canvas.style, {
+    position: "fixed",
+    left: "-99999px",
+    top: "0",
+    pointerEvents: "none",
+  })
+  document.body.appendChild(canvas)
   const ctx = canvas.getContext("2d")
   if (!ctx) {
+    canvas.remove()
     throw new Error("Could not create a canvas context.")
   }
 
@@ -149,9 +162,13 @@ export const recordFramesToVideo = async (
     recorder.stop()
   }
 
-  await recordingStopped
-  if (audioCtx) {
-    await audioCtx.close().catch(() => {})
+  try {
+    await recordingStopped
+    if (audioCtx) {
+      await audioCtx.close().catch(() => {})
+    }
+  } finally {
+    canvas.remove()
   }
   return { blob: new Blob(chunks, { type: mimeType }), mimeType: recorder.mimeType || mimeType }
 }

@@ -23,6 +23,23 @@ import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 const TRAILING_HOLD_MS = 1800
 /** Where your notification sound lives - see public/sounds/README.txt. */
 const NOTIFICATION_SOUND_URL = "/sounds/notification.mp3"
+/**
+ * The typing indicator is just a snapshot of the DOM, so a single capture
+ * held on screen for the whole typing duration would render as one frozen
+ * image - the "..." dots would never actually appear to bounce. Instead we
+ * take several snapshots spread across the typing window so the recorded
+ * video shows the dots animating like they do in the live preview.
+ */
+const TYPING_FRAME_STEP_MS = 180
+
+/** Splits a typing duration into a list of hold-times for successive snapshots. */
+const buildTypingHolds = (typingMs: number): number[] => {
+  const steps = Math.max(1, Math.round(typingMs / TYPING_FRAME_STEP_MS))
+  const holds = Array.from({ length: steps }, () => Math.floor(typingMs / steps))
+  const remainder = typingMs - holds.reduce((sum, value) => sum + value, 0)
+  holds[holds.length - 1] += remainder
+  return holds
+}
 
 const waitForNextPaint = () =>
   new Promise<void>((resolve) => {
@@ -103,12 +120,14 @@ export const VideoExportPanel = () => {
     setIsRendering(true)
     setPhase("capturing")
 
-    // Each non-system message contributes a "typing" frame + a "reveal" frame;
-    // system messages only get a reveal frame (no one is "typing" a system note).
-    const captureTotal = visibleMessages.reduce(
-      (total, message) => total + (message.type !== "system" ? 2 : 1),
-      0,
-    )
+    // Each non-system message contributes several "typing" snapshots (so the
+    // dots visibly animate) plus one "reveal" frame; system messages only get
+    // a reveal frame (no one is "typing" a system note).
+    const captureTotal = visibleMessages.reduce((total, message) => {
+      if (message.type === "system") return total + 1
+      const { typingMs } = computeRevealTiming(message.delayMs)
+      return total + buildTypingHolds(typingMs).length + 1
+    }, 0)
     setProgress({ done: 0, total: captureTotal })
 
     try {
@@ -124,10 +143,15 @@ export const VideoExportPanel = () => {
 
         if (message.type !== "system") {
           setTypingSenderId(message.senderId)
-          const dataUrl = await captureCurrentFrame()
-          frames.push({ dataUrl, holdMs: typingMs })
-          captured += 1
-          setProgress({ done: captured, total: captureTotal })
+          // Capture several snapshots across the typing window instead of one
+          // long-held frame, so the bouncing dots actually animate on export.
+          const typingHolds = buildTypingHolds(typingMs)
+          for (const holdMs of typingHolds) {
+            const dataUrl = await captureCurrentFrame()
+            frames.push({ dataUrl, holdMs })
+            captured += 1
+            setProgress({ done: captured, total: captureTotal })
+          }
         }
 
         setTypingSenderId(null)
