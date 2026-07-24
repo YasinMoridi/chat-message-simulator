@@ -46,7 +46,7 @@ const directStatusLabel = (status?: string, layoutId?: LayoutId) => {
   return "offline"
 }
 
-const getSelfParticipantId = (
+export const getSelfParticipantId = (
   participants: Conversation["participants"],
   activeParticipantId: string,
 ) => {

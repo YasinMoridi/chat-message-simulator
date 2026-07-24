@@ -19,7 +19,7 @@ import { useConversationPlayback } from "@/hooks/useConversationPlayback"
 import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
-import { ChatLayout } from "@/components/layout/ChatLayout"
+import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
 import { Toolbar } from "@/components/layout/Toolbar"
 import { ParticipantManager } from "@/components/editor/ParticipantManager"
 import { ConversationBuilder } from "@/components/editor/ConversationBuilder"
@@ -89,6 +89,7 @@ export const MainLayout = () => {
   )
   const { revealCount, typingSenderId, isPlaying, play, stop } = useConversationPlayback(
     visiblePlaybackMessages,
+    { selfId: getSelfParticipantId(conversation.participants, activeParticipantId) },
   )
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
   const playbackConversation = useMemo(

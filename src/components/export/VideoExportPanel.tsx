@@ -7,7 +7,7 @@ import { SizePresets } from "@/components/export/SizePresets"
 import { sizePresets } from "@/constants/exportPresets"
 import { layoutConfigs } from "@/constants/layouts"
 import { useConversationStore } from "@/store/conversationStore"
-import { ChatLayout } from "@/components/layout/ChatLayout"
+import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
 import { exportNodeToImage } from "@/utils/export"
 import {
   recordFramesToVideo,
@@ -31,7 +31,7 @@ const NOTIFICATION_SOUND_URL = "/sounds/notification.mp3"
  * take several snapshots spread across the typing window so the recorded
  * video shows the dots animating like they do in the live preview.
  */
-const TYPING_FRAME_STEP_MS = 180
+const TYPING_FRAME_STEP_MS = 90
 
 /** Splits a typing duration into a list of hold-times for successive snapshots. */
 const buildTypingHolds = (typingMs: number): number[] => {
@@ -75,6 +75,7 @@ export const VideoExportPanel = () => {
   const layout = layoutConfigs.find((item) => item.id === layoutId) ?? layoutConfigs[0]
   const theme = layout.themes.find((item) => item.id === themeId) ?? layout.themes[0]
   const preset = sizePresets.find((item) => item.id === exportSettings.presetId)
+  const selfId = getSelfParticipantId(conversation.participants, activeParticipantId)
 
   const visibleMessages = useMemo(
     () => conversation.messages.filter((message) => !message.isHidden),
@@ -122,11 +123,12 @@ export const VideoExportPanel = () => {
     setIsRendering(true)
     setPhase("capturing")
 
-    // Each non-system message contributes several "typing" snapshots (so the
-    // dots visibly animate) plus one "reveal" frame; system messages only get
-    // a reveal frame (no one is "typing" a system note).
+    // Each incoming (non-self, non-system) message contributes several
+    // "typing" snapshots (so the dots visibly animate) plus one "reveal"
+    // frame; your own outgoing messages and system messages only get a
+    // reveal frame - you never see a typing bubble for yourself.
     const captureTotal = visibleMessages.reduce((total, message) => {
-      if (message.type === "system") return total + 1
+      if (message.type === "system" || message.senderId === selfId) return total + 1
       const { typingMs } = computeRevealTiming(message.delayMs)
       return total + buildTypingHolds(typingMs).length + 1
     }, 0)
@@ -143,7 +145,7 @@ export const VideoExportPanel = () => {
         const message = visibleMessages[index]
         const { typingMs, restMs } = computeRevealTiming(message.delayMs)
 
-        if (message.type !== "system") {
+        if (message.type !== "system" && message.senderId !== selfId) {
           setTypingSenderId(message.senderId)
           // Capture several snapshots across the typing window instead of one
           // long-held frame, so the bouncing dots actually animate on export.
