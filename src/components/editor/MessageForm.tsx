@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import type { Message } from "@/types/message"
 import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 import type { Participant } from "@/types/conversation"
+import { useConversationStore } from "@/store/conversationStore"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -92,6 +93,32 @@ export const MessageForm = ({
   const previousDefaultRef = useRef(defaultSenderId)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const setDraftMessage = useConversationStore((state) => state.setDraftMessage)
+
+  // Mirror what's being typed into the preview as a live bubble, only for
+  // the "new message" form - editing an existing message already shows its
+  // (real) bubble in the chat.
+  useEffect(() => {
+    if (initial) return
+    const hasContent = type === "image" ? Boolean(imageUrl) : Boolean(content.trim())
+    if (!hasContent) {
+      setDraftMessage(null)
+      return
+    }
+    setDraftMessage({
+      senderId,
+      content,
+      imageUrl: type === "image" ? imageUrl : undefined,
+      type,
+    })
+  }, [initial, content, senderId, type, imageUrl, setDraftMessage])
+
+  // Clear the draft once this form goes away (submitted, cancelled, or closed).
+  useEffect(() => {
+    return () => {
+      setDraftMessage(null)
+    }
+  }, [setDraftMessage])
 
   useEffect(() => {
     if (initial) return

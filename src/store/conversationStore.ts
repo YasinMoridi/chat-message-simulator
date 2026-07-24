@@ -2,7 +2,7 @@ import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { defaultLayoutId } from "../constants/layouts"
 import type { Conversation, Participant } from "../types/conversation"
-import type { Message, MessageStatus, MessageType } from "../types/message"
+import type { Message, MessageStatus, MessageType, DraftMessage } from "../types/message"
 import { DEFAULT_MESSAGE_DELAY_MS } from "../types/message"
 import type { LayoutId, ThemeId } from "../types/layout"
 import { generateId } from "../utils/helpers"
@@ -57,6 +57,11 @@ interface ConversationStore {
   backgroundColor: string
   exportSettings: ExportSettings
   ui: UiState
+  /**
+   * Live mirror of whatever's currently typed in the "new message" form -
+   * lets the preview show it as a bubble before it's actually submitted.
+   */
+  draftMessage: DraftMessage | null
   history: HistoryState
   lastAutosaveAt: number | null
   setLayout: (layoutId: LayoutId) => void
@@ -87,6 +92,7 @@ interface ConversationStore {
   setMessages: (messages: Message[]) => void
   setExportSettings: (settings: Partial<ExportSettings>) => void
   setUi: (updates: Partial<UiState>) => void
+  setDraftMessage: (draft: DraftMessage | null) => void
   resetConversation: () => void
   loadConversation: (conversation: Conversation) => void
   undo: () => void
@@ -303,6 +309,7 @@ export const useConversationStore = create<ConversationStore>()(
       backgroundColor: "",
       exportSettings: defaultExportSettings,
       ui: defaultUiState,
+      draftMessage: null,
       history: { past: [], future: [] },
       lastAutosaveAt: null,
       setLayout: (layoutId) => set((state) => ({ layoutId, history: pushHistory(state) })),
@@ -482,6 +489,7 @@ export const useConversationStore = create<ConversationStore>()(
           history: pushHistory(state),
         })),
       setUi: (updates) => set((state) => ({ ui: { ...state.ui, ...updates } })),
+      setDraftMessage: (draft) => set({ draftMessage: draft }),
       resetConversation: () =>
         set((state) => ({
           conversation: buildDefaultConversation(),
@@ -493,6 +501,7 @@ export const useConversationStore = create<ConversationStore>()(
           backgroundColor: "",
           exportSettings: { ...defaultExportSettings },
           ui: { ...defaultUiState },
+          draftMessage: null,
           lastAutosaveAt: null,
           history: pushHistory(state),
         })),

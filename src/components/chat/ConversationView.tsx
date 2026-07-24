@@ -1,4 +1,5 @@
 import type { Message } from "@/types/message"
+import { DRAFT_MESSAGE_ID } from "@/types/message"
 import type { Participant } from "@/types/conversation"
 import type { LayoutConfig } from "@/types/layout"
 import { MessageBubble } from "@/components/chat/MessageBubble"
@@ -136,7 +137,13 @@ export const ConversationView = ({
           }
 
           return (
-            <div key={message.id} className={isWhatsApp ? "space-y-2" : "space-y-3"}>
+            <div
+              key={message.id}
+              className={cn(
+                isWhatsApp ? "space-y-2" : "space-y-3",
+                message.id === DRAFT_MESSAGE_ID && "opacity-60 transition-opacity",
+              )}
+            >
               {showDate ? <div className={dateBadgeClass}>{currentDate}</div> : null}
               <MessageBubble
                 message={message}

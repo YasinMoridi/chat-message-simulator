@@ -30,3 +30,18 @@ export interface Message {
 
 /** Default delay (ms) applied to a message when none is set. */
 export const DEFAULT_MESSAGE_DELAY_MS = 1200
+
+/**
+ * A message that hasn't been added yet - mirrors what's currently typed in
+ * the "new message" form, so the preview can show it live as a bubble
+ * before it's actually submitted.
+ */
+export interface DraftMessage {
+  senderId: string
+  content: string
+  imageUrl?: string
+  type: MessageType
+}
+
+/** id given to the temporary bubble rendered for a DraftMessage in the preview. */
+export const DRAFT_MESSAGE_ID = "__draft-preview__"

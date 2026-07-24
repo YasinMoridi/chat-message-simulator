@@ -18,7 +18,9 @@ import { useConversationPlayback } from "@/hooks/useConversationPlayback"
 import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
-import { ChatLayout } from "@/components/layout/ChatLayout"
+import type { Message } from "@/types/message"
+import { DRAFT_MESSAGE_ID } from "@/types/message"
+import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
 import {
   NotificationBanner,
   notificationPlatformForLayout,
@@ -70,6 +72,7 @@ export const MainLayout = () => {
   const ui = useConversationStore((state) => state.ui)
   const previousActivePanelRef = useRef(ui.activePanel)
   const setUi = useConversationStore((state) => state.setUi)
+  const draftMessage = useConversationStore((state) => state.draftMessage)
   const exportSettings = useConversationStore((state) => state.exportSettings)
   const setExportSettings = useConversationStore((state) => state.setExportSettings)
   const setTheme = useConversationStore((state) => state.setTheme)
@@ -89,18 +92,49 @@ export const MainLayout = () => {
     () => conversation.messages.filter((message) => !message.isHidden),
     [conversation.messages],
   )
-  const { revealCount, typingSenderId, isPlaying, play, stop, bannerMessage, bannerVisible } =
-    useConversationPlayback(visiblePlaybackMessages)
+  const selfId = useMemo(
+    () => getSelfParticipantId(conversation.participants, activeParticipantId),
+    [conversation.participants, activeParticipantId],
+  )
+  const {
+    revealCount,
+    typingSenderId,
+    typingDraftText,
+    isPlaying,
+    play,
+    stop,
+    bannerMessage,
+    bannerVisible,
+  } = useConversationPlayback(visiblePlaybackMessages, { selfId })
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
     : undefined
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
+  // While composing a new message, mirror it as a live bubble at the end of the preview.
+  const draftPreviewMessage: Message | null = useMemo(() => {
+    if (isPlaying || !draftMessage) return null
+    const hasContent =
+      draftMessage.type === "image" ? Boolean(draftMessage.imageUrl) : Boolean(draftMessage.content.trim())
+    if (!hasContent) return null
+    return {
+      id: DRAFT_MESSAGE_ID,
+      senderId: draftMessage.senderId,
+      content: draftMessage.content,
+      imageUrl: draftMessage.imageUrl,
+      timestamp: new Date().toISOString(),
+      type: draftMessage.type,
+      status: "sent",
+    }
+  }, [isPlaying, draftMessage])
   const playbackConversation = useMemo(
     () => ({
       ...conversation,
-      messages: isPlaying ? visiblePlaybackMessages.slice(0, revealCount) : conversation.messages,
+      messages: [
+        ...(isPlaying ? visiblePlaybackMessages.slice(0, revealCount) : conversation.messages),
+        ...(draftPreviewMessage ? [draftPreviewMessage] : []),
+      ],
     }),
-    [conversation, isPlaying, visiblePlaybackMessages, revealCount],
+    [conversation, isPlaying, visiblePlaybackMessages, revealCount, draftPreviewMessage],
   )
 
   const handleQuickExport = async (mode: "download" | "preview") => {
@@ -590,6 +624,7 @@ export const MainLayout = () => {
                             conversationContainerRef={previewConversationRef}
                             conversationContentRef={previewConversationContentRef}
                             typingSenderId={typingSenderId}
+                            typingDraftText={typingDraftText}
                           />
                           {ui.showNotificationBanner && bannerMessage ? (
                             <NotificationBanner

@@ -21,6 +21,13 @@ interface ChatLayoutProps {
   typingSenderId?: string | null
   /** See TypingIndicator's frozenPhaseMs - only used during video export. */
   typingPhaseMs?: number
+  /**
+   * Progressively revealed text for the "self" participant's own message
+   * currently being simulated as real keystrokes - shown live in the
+   * MessageInput instead of the dots bubble. Null/undefined when that's not
+   * happening right now.
+   */
+  typingDraftText?: string | null
 }
 
 const groupStatusLabel = (participants: Conversation["participants"]) => {
@@ -72,10 +79,15 @@ export const ChatLayout = ({
   conversationContentRef,
   typingSenderId,
   typingPhaseMs,
+  typingDraftText,
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
   const selfId = getSelfParticipantId(conversation.participants, activeParticipantId)
+  // When "you" are the one being simulated as typing, show it as real
+  // keystrokes in the input instead of the dots bubble in the chat log.
+  const isSelfTypingLive =
+    typingSenderId === selfId && typingDraftText !== null && typingDraftText !== undefined
   const isGroup = conversation.participants.length > 2
   const headerParticipant = !isGroup
     ? conversation.participants.find((participant) => participant.id !== selfId) ??
@@ -144,11 +156,13 @@ export const ChatLayout = ({
           mode={conversationMode}
           containerRef={conversationContainerRef}
           contentRef={conversationContentRef}
-          typingSenderId={typingSenderId}
+          typingSenderId={isSelfTypingLive ? null : typingSenderId}
           typingPhaseMs={typingPhaseMs}
         />
       </div>
-      {showChrome ? <MessageInput layout={layout} /> : null}
+      {showChrome ? (
+        <MessageInput layout={layout} typingText={isSelfTypingLive ? typingDraftText : null} />
+      ) : null}
     </div>
   )
 }

@@ -6,9 +6,16 @@ import type { LayoutConfig } from "@/types/layout"
 interface MessageInputProps {
   placeholder?: string
   layout?: LayoutConfig
+  /**
+   * When set (even to an empty string), the input shows this text with a
+   * blinking caret instead of the placeholder - simulating someone actually
+   * typing their message into the phone before it sends.
+   */
+  typingText?: string | null
 }
 
-export const MessageInput = ({ placeholder = "Message", layout }: MessageInputProps) => {
+export const MessageInput = ({ placeholder = "Message", layout, typingText }: MessageInputProps) => {
+  const isTyping = typingText !== null && typingText !== undefined
   const isWhatsApp = layout?.id === "whatsapp"
   const isIMessage = layout?.id === "imessage"
   const isSnapchat = layout?.id === "snapchat"
@@ -143,10 +150,20 @@ export const MessageInput = ({ placeholder = "Message", layout }: MessageInputPr
               : undefined,
         }}
       >
-        {isIMessage ? <Camera className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
-        {isSnapchat ? <Smile className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
-        {isMessenger ? <Smile className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
-        <span className="text-[var(--chat-muted)]">{inputPlaceholder}</span>
+        {isIMessage && !isTyping ? <Camera className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
+        {isSnapchat && !isTyping ? <Smile className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
+        {isMessenger && !isTyping ? <Smile className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
+        {isTyping ? (
+          <span
+            className="min-w-0 flex-1 whitespace-pre-wrap break-words"
+            style={{ color: "var(--chat-text)" }}
+          >
+            {typingText}
+            <span className="typing-caret" style={{ color: "var(--chat-text)" }} aria-hidden="true" />
+          </span>
+        ) : (
+          <span className="text-[var(--chat-muted)]">{inputPlaceholder}</span>
+        )}
       </div>
       {isWhatsApp ? (
         <Button variant="ghost" size="icon" className={iconButtonClass}>
