@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 import type { Message } from "@/types/message"
-import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
+import {
+  DEFAULT_MESSAGE_DELAY_MS,
+  DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
+  DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
+} from "@/types/message"
 import type { Participant } from "@/types/conversation"
 import { useConversationStore } from "@/store/conversationStore"
 import { Button } from "@/components/ui/button"
@@ -31,6 +35,10 @@ interface MessageFormProps {
     status: Message["status"]
     delayMs: number
     notificationOverride?: Message["notificationOverride"]
+    notificationClickable?: boolean
+    notificationOpenDelayMs?: number
+    notificationAutoOpen?: boolean
+    notificationAutoOpenDelayMs?: number
   }) => void
   onCancel?: () => void
 }
@@ -41,6 +49,11 @@ const resolveSenderId = (preferredId: string | undefined, participants: Particip
   }
   return participants[0]?.id ?? ""
 }
+
+/** Colors cycled through when a brand-new sender is created by typing a name that doesn't match anyone yet. */
+const NEW_PARTICIPANT_COLORS = ["#22c55e", "#0b84ff", "#f97316", "#a855f7", "#ef4444", "#14b8a6"]
+const pickNewParticipantColor = (participantCount: number) =>
+  NEW_PARTICIPANT_COLORS[participantCount % NEW_PARTICIPANT_COLORS.length]
 
 const toInputValue = (iso: string) => {
   const date = new Date(iso)
@@ -66,6 +79,13 @@ export const MessageForm = ({
   const [senderId, setSenderId] = useState(
     initial?.senderId ?? resolveSenderId(defaultSenderId, participants),
   )
+  const [senderNameInput, setSenderNameInput] = useState(
+    () =>
+      participants.find(
+        (participant) =>
+          participant.id === (initial?.senderId ?? resolveSenderId(defaultSenderId, participants)),
+      )?.name ?? "",
+  )
   const [timestamp, setTimestamp] = useState(
     initial?.timestamp ? toInputValue(initial.timestamp) : toInputValue(new Date().toISOString()),
   )
@@ -88,12 +108,27 @@ export const MessageForm = ({
   const [notificationAvatarUrl, setNotificationAvatarUrl] = useState(
     initial?.notificationOverride?.avatarUrl ?? "",
   )
+  const [notificationClickable, setNotificationClickable] = useState(
+    initial?.notificationClickable ?? false,
+  )
+  const [notificationOpenDelaySeconds, setNotificationOpenDelaySeconds] = useState(
+    (initial?.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS) / 1000,
+  )
+  const [notificationAutoOpen, setNotificationAutoOpen] = useState(
+    initial?.notificationAutoOpen ?? false,
+  )
+  const [notificationAutoOpenDelaySeconds, setNotificationAutoOpenDelaySeconds] = useState(
+    (initial?.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS) / 1000,
+  )
   const showAdvanced = advancedOpen ?? true
   const showAdvancedToggle = typeof advancedOpen === "boolean" && typeof onToggleAdvanced === "function"
   const previousDefaultRef = useRef(defaultSenderId)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const setDraftMessage = useConversationStore((state) => state.setDraftMessage)
+  const addParticipant = useConversationStore((state) => state.addParticipant)
+  const notificationSenderNames = useConversationStore((state) => state.notificationSenderNames)
+  const addNotificationSenderName = useConversationStore((state) => state.addNotificationSenderName)
 
   // Mirror what's being typed into the preview as a live bubble, only for
   // the "new message" form - editing an existing message already shows its
@@ -133,6 +168,18 @@ export const MessageForm = ({
       return current
     })
   }, [defaultSenderId, initial, participants])
+
+  // Whenever senderId changes for reasons other than free typing (initial
+  // load, the default-sync above, picking an existing participant), mirror
+  // its name into the text field. This intentionally does NOT run while the
+  // user is typing a name that doesn't match anyone yet, since senderId
+  // won't have changed in that case - so an in-progress new name is never
+  // clobbered.
+  useEffect(() => {
+    const match = participants.find((participant) => participant.id === senderId)
+    if (match) setSenderNameInput(match.name)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [senderId])
 
   const insertAtCursor = (text: string) => {
     const element = textareaRef.current
@@ -194,8 +241,25 @@ export const MessageForm = ({
           setImageError("Please upload an image for this message.")
           return
         }
+        if (type === "notification" && notificationOverrideEnabled && notificationSenderName.trim()) {
+          addNotificationSenderName(notificationSenderName)
+        }
+        const trimmedSenderName = senderNameInput.trim()
+        const matchedParticipant = participants.find(
+          (participant) => participant.name.trim().toLowerCase() === trimmedSenderName.toLowerCase(),
+        )
+        let finalSenderId = matchedParticipant?.id ?? senderId
+        if (!matchedParticipant && trimmedSenderName) {
+          addParticipant({
+            name: trimmedSenderName,
+            status: "online",
+            color: pickNewParticipantColor(participants.length),
+          })
+          const created = useConversationStore.getState().conversation.participants.at(-1)
+          if (created) finalSenderId = created.id
+        }
         onSubmit({
-          senderId,
+          senderId: finalSenderId,
           content,
           imageUrl: type === "image" ? imageUrl : undefined,
           timestamp: fromInputValue(timestamp),
@@ -211,6 +275,17 @@ export const MessageForm = ({
                   avatarUrl: notificationAvatarUrl.trim() || undefined,
                 }
               : { enabled: false },
+          notificationClickable: type === "notification" ? notificationClickable : undefined,
+          notificationOpenDelayMs:
+            type === "notification" && notificationClickable
+              ? Math.round(Math.max(0, notificationOpenDelaySeconds) * 1000)
+              : undefined,
+          notificationAutoOpen:
+            type === "notification" && notificationClickable ? notificationAutoOpen : undefined,
+          notificationAutoOpenDelayMs:
+            type === "notification" && notificationClickable && notificationAutoOpen
+              ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
+              : undefined,
         })
         if (resetOnSubmit && !initial) {
           setContent("")
@@ -225,6 +300,10 @@ export const MessageForm = ({
           setNotificationSenderName("")
           setNotificationAppName("")
           setNotificationAvatarUrl("")
+          setNotificationClickable(false)
+          setNotificationOpenDelaySeconds(DEFAULT_NOTIFICATION_OPEN_DELAY_MS / 1000)
+          setNotificationAutoOpen(false)
+          setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
         }
       }}
     >
@@ -310,18 +389,28 @@ export const MessageForm = ({
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Sender</Label>
-              <Select value={senderId} onValueChange={setSenderId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select sender" />
-                </SelectTrigger>
-                <SelectContent>
-                  {participants.map((participant) => (
-                    <SelectItem key={participant.id} value={participant.id}>
-                      {participant.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input
+                list="message-sender-name-options"
+                value={senderNameInput}
+                onChange={(event) => {
+                  const value = event.target.value
+                  setSenderNameInput(value)
+                  const match = participants.find(
+                    (participant) => participant.name.trim().toLowerCase() === value.trim().toLowerCase(),
+                  )
+                  if (match) setSenderId(match.id)
+                }}
+                placeholder="Pick or type a name"
+              />
+              <datalist id="message-sender-name-options">
+                {participants.map((participant) => (
+                  <option key={participant.id} value={participant.name} />
+                ))}
+              </datalist>
+              <p className="text-[11px] text-slate-500">
+                Pick an existing participant, or type a new name - it's added as a participant
+                when you submit.
+              </p>
             </div>
             <div className="space-y-2">
               <Label>Timestamp</Label>
@@ -414,10 +503,20 @@ export const MessageForm = ({
                   <div className="space-y-2">
                     <Label>Notification sender name</Label>
                     <Input
+                      list="notification-sender-name-options"
                       value={notificationSenderName}
                       onChange={(event) => setNotificationSenderName(event.target.value)}
                       placeholder="e.g. Sarah"
                     />
+                    <datalist id="notification-sender-name-options">
+                      {notificationSenderNames.map((name) => (
+                        <option key={name} value={name} />
+                      ))}
+                    </datalist>
+                    <p className="text-[11px] text-slate-500">
+                      Pick a name you've used before, or just type a new one - it's added to the
+                      list.
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label>Notification app name</Label>
@@ -435,6 +534,63 @@ export const MessageForm = ({
                       placeholder="https://..."
                     />
                   </div>
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                <div className="space-y-0.5">
+                  <Label>Clickable (opens the chat)</Label>
+                  <p className="text-[11px] text-slate-500">
+                    Let this banner be tapped during live playback, like a real notification that
+                    opens the app when you tap it.
+                  </p>
+                </div>
+                <Switch checked={notificationClickable} onCheckedChange={setNotificationClickable} />
+              </div>
+              {notificationClickable ? (
+                <div className="space-y-2">
+                  <Label>Opens after (seconds)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={notificationOpenDelaySeconds}
+                    onChange={(event) => setNotificationOpenDelaySeconds(Number(event.target.value))}
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    How long it waits after being tapped before it opens into the full chat.
+                  </p>
+                </div>
+              ) : null}
+              {notificationClickable ? (
+                <div className="space-y-3 border-t border-slate-100 pt-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <Label>Auto-open (no tap needed)</Label>
+                      <p className="text-[11px] text-slate-500">
+                        Instead of waiting for someone to actually click the banner, it taps
+                        itself during playback - useful when you're directing the timing rather
+                        than clicking live.
+                      </p>
+                    </div>
+                    <Switch checked={notificationAutoOpen} onCheckedChange={setNotificationAutoOpen} />
+                  </div>
+                  {notificationAutoOpen ? (
+                    <div className="space-y-2">
+                      <Label>Auto-taps after (seconds)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={notificationAutoOpenDelaySeconds}
+                        onChange={(event) =>
+                          setNotificationAutoOpenDelaySeconds(Number(event.target.value))
+                        }
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        How long the banner sits there after appearing before it taps itself.
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>

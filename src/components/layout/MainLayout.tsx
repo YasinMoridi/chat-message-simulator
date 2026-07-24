@@ -19,7 +19,11 @@ import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
 import type { Message } from "@/types/message"
-import { DRAFT_MESSAGE_ID } from "@/types/message"
+import {
+  DRAFT_MESSAGE_ID,
+  DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
+  DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
+} from "@/types/message"
 import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
 import {
   NotificationBanner,
@@ -109,6 +113,12 @@ export const MainLayout = () => {
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
     : undefined
+  const [isOpeningChatFromBanner, setIsOpeningChatFromBanner] = useState(false)
+  const bannerOpenTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Schedules the "self tap" for a notificationAutoOpen banner - separate
+  // from bannerOpenTimeoutRef, which times the press-to-open beat that
+  // follows once a tap (real or simulated) has actually happened.
+  const bannerAutoTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
   // While composing a new message, mirror it as a live bubble at the end of the preview.
   const draftPreviewMessage: Message | null = useMemo(() => {
@@ -377,6 +387,82 @@ export const MainLayout = () => {
     })
   }
 
+  // Tapping a clickable notification banner mimics opening a real OS
+  // notification: after a short configurable delay, it reveals the full
+  // chat (stopping the "..." playback right there) and scrolls to the new
+  // message, instead of waiting for the rest of the conversation to play.
+  const handleBannerClick = () => {
+    if (!bannerMessage?.notificationClickable || isOpeningChatFromBanner) return
+    setIsOpeningChatFromBanner(true)
+    const delay = bannerMessage.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS
+    bannerOpenTimeoutRef.current = setTimeout(() => {
+      stop()
+      setIsOpeningChatFromBanner(false)
+      requestAnimationFrame(() => scrollPreviewConversation("bottom"))
+    }, delay)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (bannerOpenTimeoutRef.current) {
+        clearTimeout(bannerOpenTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // For banners scripted with notificationAutoOpen, nobody needs to click
+  // anything - once the banner has finished sliding in, this schedules the
+  // same tap handleBannerClick would run for a real click, after the
+  // configured delay. Purely director-driven: set it once when authoring
+  // the message and playback (live or recorded) always opens the chat at
+  // exactly that moment.
+  useEffect(() => {
+    if (bannerAutoTapTimeoutRef.current) {
+      clearTimeout(bannerAutoTapTimeoutRef.current)
+      bannerAutoTapTimeoutRef.current = null
+    }
+    if (
+      !bannerVisible ||
+      !bannerMessage?.notificationClickable ||
+      !bannerMessage?.notificationAutoOpen ||
+      isOpeningChatFromBanner
+    ) {
+      return
+    }
+    const autoDelay =
+      bannerMessage.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS
+    bannerAutoTapTimeoutRef.current = setTimeout(() => {
+      bannerAutoTapTimeoutRef.current = null
+      handleBannerClick()
+    }, autoDelay)
+    return () => {
+      if (bannerAutoTapTimeoutRef.current) {
+        clearTimeout(bannerAutoTapTimeoutRef.current)
+        bannerAutoTapTimeoutRef.current = null
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bannerMessage, bannerVisible])
+
+  useEffect(() => {
+    return () => {
+      if (bannerAutoTapTimeoutRef.current) {
+        clearTimeout(bannerAutoTapTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // If playback is stopped some other way (Stop button, finishing on its
+  // own) while a tap is still pending, don't leave the banner stuck in its
+  // "opening" pressed state.
+  useEffect(() => {
+    if (!isPlaying && bannerOpenTimeoutRef.current) {
+      clearTimeout(bannerOpenTimeoutRef.current)
+      bannerOpenTimeoutRef.current = null
+      setIsOpeningChatFromBanner(false)
+    }
+  }, [isPlaying])
+
   const panelTabs = [
     {
       id: "participants",
@@ -639,6 +725,9 @@ export const MainLayout = () => {
                               }
                               avatarUrl={bannerAvatarUrl}
                               visible={bannerVisible}
+                              clickable={Boolean(bannerMessage.notificationClickable)}
+                              onClick={handleBannerClick}
+                              isOpening={isOpeningChatFromBanner}
                             />
                           ) : null}
                         </div>

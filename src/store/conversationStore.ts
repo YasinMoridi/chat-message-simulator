@@ -58,6 +58,13 @@ interface ConversationStore {
   exportSettings: ExportSettings
   ui: UiState
   /**
+   * Free-typed names used for the notification sender-name override across
+   * any conversation - lets the picker in MessageForm offer previously used
+   * custom names instead of forcing a fresh retype (or a full Participant)
+   * every time.
+   */
+  notificationSenderNames: string[]
+  /**
    * Live mirror of whatever's currently typed in the "new message" form -
    * lets the preview show it as a bubble before it's actually submitted.
    */
@@ -85,6 +92,10 @@ interface ConversationStore {
     status: MessageStatus
     delayMs?: number
     notificationOverride?: Message["notificationOverride"]
+    notificationClickable?: boolean
+    notificationOpenDelayMs?: number
+    notificationAutoOpen?: boolean
+    notificationAutoOpenDelayMs?: number
   }) => void
   updateMessage: (messageId: string, updates: Partial<Message>) => void
   deleteMessage: (messageId: string) => void
@@ -92,6 +103,7 @@ interface ConversationStore {
   setMessages: (messages: Message[]) => void
   setExportSettings: (settings: Partial<ExportSettings>) => void
   setUi: (updates: Partial<UiState>) => void
+  addNotificationSenderName: (name: string) => void
   setDraftMessage: (draft: DraftMessage | null) => void
   resetConversation: () => void
   loadConversation: (conversation: Conversation) => void
@@ -309,6 +321,7 @@ export const useConversationStore = create<ConversationStore>()(
       backgroundColor: "",
       exportSettings: defaultExportSettings,
       ui: defaultUiState,
+      notificationSenderNames: [],
       draftMessage: null,
       history: { past: [], future: [] },
       lastAutosaveAt: null,
@@ -489,6 +502,16 @@ export const useConversationStore = create<ConversationStore>()(
           history: pushHistory(state),
         })),
       setUi: (updates) => set((state) => ({ ui: { ...state.ui, ...updates } })),
+      addNotificationSenderName: (name) =>
+        set((state) => {
+          const trimmed = name.trim()
+          if (!trimmed) return {}
+          const withoutDuplicate = state.notificationSenderNames.filter(
+            (existing) => existing.toLowerCase() !== trimmed.toLowerCase(),
+          )
+          // Most recently used first, capped so the list doesn't grow forever.
+          return { notificationSenderNames: [trimmed, ...withoutDuplicate].slice(0, 30) }
+        }),
       setDraftMessage: (draft) => set({ draftMessage: draft }),
       resetConversation: () =>
         set((state) => ({
@@ -616,6 +639,7 @@ export const useConversationStore = create<ConversationStore>()(
         backgroundColor: state.backgroundColor,
         exportSettings: state.exportSettings,
         lastAutosaveAt: state.lastAutosaveAt,
+        notificationSenderNames: state.notificationSenderNames,
       }),
     },
   ),
