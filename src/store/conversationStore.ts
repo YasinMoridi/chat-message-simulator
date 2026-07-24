@@ -23,6 +23,8 @@ export interface ExportSettings {
 export interface UiState {
   activeView: "editor" | "preview"
   showChrome: boolean
+  /** Show the OS-style "new message" notification banner at the top of the screen. */
+  showNotificationBanner: boolean
   zoom: number
   isSidebarOpen: boolean
   activePanel: "messages" | "participants" | "settings" | "export" | "video"
@@ -259,6 +261,7 @@ const defaultExportSettings: ExportSettings = {
 const defaultUiState: UiState = {
   activeView: "editor",
   showChrome: true,
+  showNotificationBanner: true,
   zoom: 1,
   isSidebarOpen: true,
   activePanel: "messages",

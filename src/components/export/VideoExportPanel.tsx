@@ -8,7 +8,12 @@ import { sizePresets } from "@/constants/exportPresets"
 import { layoutConfigs } from "@/constants/layouts"
 import { useConversationStore } from "@/store/conversationStore"
 import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
+import {
+  NotificationBanner,
+  notificationPlatformForLayout,
+} from "@/components/chat/NotificationBanner"
 import { exportNodeToCanvas } from "@/utils/export"
+import type { Message } from "@/types/message"
 import {
   recordFramesToVideo,
   isVideoRecordingSupported,
@@ -33,6 +38,8 @@ const NOTIFICATION_SOUND_URL = "/sounds/notification.mp3"
  * video shows the dots animating like they do in the live preview.
  */
 const TYPING_FRAME_STEP_MS = 90
+/** How long the notification banner frame stays on screen in the exported video. */
+const BANNER_CAPTURE_HOLD_MS = 1500
 
 /** Splits a typing duration into a list of hold-times for successive snapshots. */
 const buildTypingHolds = (typingMs: number): number[] => {
@@ -66,6 +73,7 @@ export const VideoExportPanel = () => {
   const [revealCount, setRevealCount] = useState(0)
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
   const [typingPhaseMs, setTypingPhaseMs] = useState(0)
+  const [bannerMessage, setBannerMessage] = useState<Message | null>(null)
   const [isRendering, setIsRendering] = useState(false)
   const [phase, setPhase] = useState<"capturing" | "encoding" | null>(null)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
@@ -83,13 +91,28 @@ export const VideoExportPanel = () => {
     [conversation.messages],
   )
 
-  const stageConversation = useMemo(
-    () => ({
-      ...conversation,
-      messages: visibleMessages.slice(0, revealCount),
-    }),
-    [conversation, visibleMessages, revealCount],
-  )
+  // How many trailing messages stay mounted in the offscreen stage during
+  // capture. The stage always scrolls to the bottom before a capture, so only
+  // the bottom of the container is ever visible in a frame - but
+  // exportNodeToCanvas clones and rasterizes the *entire* mounted DOM on every
+  // single frame no matter what's actually visible. Without a cap, later
+  // frames drag the whole conversation history along: frame 50 clones and
+  // serializes 50 message bubbles, frame 200 clones 200, so per-frame capture
+  // time grows with the conversation length and total export time grows
+  // roughly with its square - that's the "starts fast, gets slower and
+  // slower" symptom. Capping the window keeps every frame's capture cost
+  // roughly constant. 40 messages is comfortably more than fits on screen at
+  // any of our export sizes, so nothing actually visible is ever trimmed.
+  const MAX_MOUNTED_MESSAGES = 40
+
+  const stageConversation = useMemo(() => {
+    const revealed = visibleMessages.slice(0, revealCount)
+    const windowed =
+      revealed.length > MAX_MOUNTED_MESSAGES
+        ? revealed.slice(revealed.length - MAX_MOUNTED_MESSAGES)
+        : revealed
+    return { ...conversation, messages: windowed }
+  }, [conversation, visibleMessages, revealCount])
 
   const supported = isWebCodecsExportSupported() || isVideoRecordingSupported()
   const fileExtension = isMp4MimeType(videoMimeType) ? "mp4" : "webm"
@@ -131,7 +154,8 @@ export const VideoExportPanel = () => {
     const captureTotal = visibleMessages.reduce((total, message) => {
       if (message.type === "system" || message.senderId === selfId) return total + 1
       const { typingMs } = computeRevealTiming(message.delayMs)
-      return total + buildTypingHolds(typingMs).length + 1
+      const bannerFrame = ui.showNotificationBanner ? 1 : 0
+      return total + buildTypingHolds(typingMs).length + 1 + bannerFrame
     }, 0)
     setProgress({ done: 0, total: captureTotal })
 
@@ -173,6 +197,17 @@ export const VideoExportPanel = () => {
         frames.push({ canvas, holdMs, playSound: message.type !== "system" })
         captured += 1
         setProgress({ done: captured, total: captureTotal })
+
+        // One extra still frame showing the OS-style notification banner for
+        // incoming messages, right after the message itself appears.
+        if (message.type !== "system" && message.senderId !== selfId && ui.showNotificationBanner) {
+          setBannerMessage(message)
+          const bannerCanvas = await captureCurrentFrame()
+          frames.push({ canvas: bannerCanvas, holdMs: BANNER_CAPTURE_HOLD_MS })
+          setBannerMessage(null)
+          captured += 1
+          setProgress({ done: captured, total: captureTotal })
+        }
       }
 
       // Hold on the final, fully-revealed frame a bit before the video ends.
@@ -228,6 +263,7 @@ export const VideoExportPanel = () => {
       setIsRendering(false)
       setPhase(null)
       setTypingSenderId(null)
+      setBannerMessage(null)
       setRevealCount(visibleMessages.length)
     }
   }
@@ -342,7 +378,11 @@ export const VideoExportPanel = () => {
 
       {/* Offscreen stage: rendered off-canvas, only used to capture frames. */}
       <div aria-hidden="true" className="pointer-events-none fixed left-[-10000px] top-0">
-        <div ref={stageRef} style={{ width: exportSettings.width, height: exportSettings.height }}>
+        <div
+          ref={stageRef}
+          className="relative"
+          style={{ width: exportSettings.width, height: exportSettings.height }}
+        >
           <ChatLayout
             conversation={stageConversation}
             layout={layout}
@@ -357,6 +397,26 @@ export const VideoExportPanel = () => {
             typingSenderId={typingSenderId}
             typingPhaseMs={typingPhaseMs}
           />
+          {bannerMessage ? (
+            (() => {
+              const bannerSender = conversation.participants.find(
+                (participant) => participant.id === bannerMessage.senderId,
+              )
+              return (
+                <NotificationBanner
+                  platform={notificationPlatformForLayout(layout.id)}
+                  appName={layout.name}
+                  appColor={theme.colors.accent}
+                  senderName={bannerSender?.name ?? "New message"}
+                  messageText={
+                    bannerMessage.type === "image" ? "Sent a photo" : bannerMessage.content
+                  }
+                  avatarUrl={bannerSender?.avatarUrl}
+                  visible
+                />
+              )
+            })()
+          ) : null}
         </div>
       </div>
     </div>

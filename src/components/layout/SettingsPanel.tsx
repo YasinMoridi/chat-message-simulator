@@ -79,6 +79,19 @@ export const SettingsPanel = () => {
         <Switch checked={ui.showChrome} onCheckedChange={(value) => setUi({ showChrome: value })} />
       </div>
 
+      <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
+        <div>
+          <div className="text-sm font-medium text-slate-900">Notification banner</div>
+          <div className="text-xs text-slate-500">
+            Show the phone-style "new message" banner at the top of the screen.
+          </div>
+        </div>
+        <Switch
+          checked={ui.showNotificationBanner}
+          onCheckedChange={(value) => setUi({ showNotificationBanner: value })}
+        />
+      </div>
+
       <div className="space-y-2">
         <Label>Zoom</Label>
         <div className="flex flex-wrap gap-2">

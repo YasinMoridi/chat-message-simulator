@@ -20,6 +20,10 @@ import { layoutConfigs } from "@/constants/layouts"
 import { sizePresets, type SizePreset } from "@/constants/exportPresets"
 import { useConversationStore } from "@/store/conversationStore"
 import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
+import {
+  NotificationBanner,
+  notificationPlatformForLayout,
+} from "@/components/chat/NotificationBanner"
 import { Toolbar } from "@/components/layout/Toolbar"
 import { ParticipantManager } from "@/components/editor/ParticipantManager"
 import { ConversationBuilder } from "@/components/editor/ConversationBuilder"
@@ -87,10 +91,13 @@ export const MainLayout = () => {
     () => conversation.messages.filter((message) => !message.isHidden),
     [conversation.messages],
   )
-  const { revealCount, typingSenderId, isPlaying, play, stop } = useConversationPlayback(
-    visiblePlaybackMessages,
-    { selfId: getSelfParticipantId(conversation.participants, activeParticipantId) },
-  )
+  const { revealCount, typingSenderId, isPlaying, play, stop, bannerMessage, bannerVisible } =
+    useConversationPlayback(visiblePlaybackMessages, {
+      selfId: getSelfParticipantId(conversation.participants, activeParticipantId),
+    })
+  const bannerSender = bannerMessage
+    ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
+    : undefined
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
   const playbackConversation = useMemo(
     () => ({
@@ -573,7 +580,7 @@ export const MainLayout = () => {
                       >
                         <div
                           ref={exportRef}
-                          className="h-full w-full"
+                          className="relative h-full w-full"
                           style={{ width: exportSettings.width, height: exportSettings.height }}
                         >
                           <ChatLayout
@@ -590,6 +597,21 @@ export const MainLayout = () => {
                             conversationContentRef={previewConversationContentRef}
                             typingSenderId={typingSenderId}
                           />
+                          {ui.showNotificationBanner && bannerMessage ? (
+                            <NotificationBanner
+                              platform={notificationPlatformForLayout(layout.id)}
+                              appName={layout.name}
+                              appColor={theme.colors.accent}
+                              senderName={bannerSender?.name ?? "New message"}
+                              messageText={
+                                bannerMessage.type === "image"
+                                  ? "Sent a photo"
+                                  : bannerMessage.content
+                              }
+                              avatarUrl={bannerSender?.avatarUrl}
+                              visible={bannerVisible}
+                            />
+                          ) : null}
                         </div>
                       </div>
                     </div>

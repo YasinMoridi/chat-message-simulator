@@ -7,12 +7,17 @@ interface UseConversationPlaybackOptions {
   /** Play the little "pop" sound whenever a new message is revealed. */
   soundEnabled?: boolean
   /**
-   * Id of the "you" participant. No longer used to gate the typing bubble
-   * (it now shows for every sender, including yourself) - kept so callers
-   * don't need to change their call site, and in case it's needed again.
+   * Id of the "you" participant. Used to gate the notification banner (you
+   * don't get an OS notification for your own outgoing messages) - kept
+   * optional since it used to only matter for the typing bubble.
    */
   selfId?: string
 }
+
+/** How long the notification banner stays up before it slides away. */
+const BANNER_HOLD_MS = 2600
+/** Must match the transition duration used in NotificationBanner.tsx. */
+const BANNER_EXIT_MS = 300
 
 export const useConversationPlayback = (
   messages: Message[],
@@ -21,13 +26,46 @@ export const useConversationPlayback = (
   const [revealCount, setRevealCount] = useState(messages.length)
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [bannerMessage, setBannerMessage] = useState<Message | null>(null)
+  const [bannerVisible, setBannerVisible] = useState(false)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const bannerTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
   const clearPendingTimeout = () => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
       timeoutRef.current = null
     }
+  }
+
+  const clearBannerTimeouts = () => {
+    bannerTimeoutsRef.current.forEach((id) => clearTimeout(id))
+    bannerTimeoutsRef.current = []
+  }
+
+  const dismissBanner = () => {
+    clearBannerTimeouts()
+    setBannerVisible(false)
+    setBannerMessage(null)
+  }
+
+  // Slides the banner in for `message`, then back out after BANNER_HOLD_MS
+  // (or sooner if the next message is due before that).
+  const showBanner = (message: Message, holdMs: number) => {
+    clearBannerTimeouts()
+    setBannerMessage(message)
+    // Mount hidden first, then flip to visible a tick later so the
+    // slide-down/fade transition actually plays instead of popping in.
+    const raf = requestAnimationFrame(() => setBannerVisible(true))
+    bannerTimeoutsRef.current.push(raf as unknown as ReturnType<typeof setTimeout>)
+
+    const hideAfter = Math.max(600, Math.min(holdMs, BANNER_HOLD_MS))
+    const hideTimeout = setTimeout(() => {
+      setBannerVisible(false)
+      const clearTimeoutId = setTimeout(() => setBannerMessage(null), BANNER_EXIT_MS)
+      bannerTimeoutsRef.current.push(clearTimeoutId)
+    }, hideAfter)
+    bannerTimeoutsRef.current.push(hideTimeout)
   }
 
   // Keep everything visible by default (e.g. while editing in the builder).
@@ -40,6 +78,7 @@ export const useConversationPlayback = (
 
   const stop = () => {
     clearPendingTimeout()
+    dismissBanner()
     setIsPlaying(false)
     setTypingSenderId(null)
     setRevealCount(messages.length)
@@ -47,6 +86,7 @@ export const useConversationPlayback = (
 
   const play = () => {
     clearPendingTimeout()
+    dismissBanner()
     setIsPlaying(true)
     setTypingSenderId(null)
     setRevealCount(0)
@@ -73,6 +113,11 @@ export const useConversationPlayback = (
         if (soundEnabled && message.type !== "system") {
           playMessageSound()
         }
+        // Only incoming messages get an OS-style notification - you don't
+        // see a notification for a message you just sent yourself.
+        if (message.type !== "system" && message.senderId !== selfId) {
+          showBanner(message, restMs)
+        }
 
         timeoutRef.current = setTimeout(() => step(index + 1), restMs)
       }, typingMs)
@@ -82,7 +127,13 @@ export const useConversationPlayback = (
     step(0)
   }
 
-  useEffect(() => () => clearPendingTimeout(), [])
+  useEffect(
+    () => () => {
+      clearPendingTimeout()
+      clearBannerTimeouts()
+    },
+    [],
+  )
 
   return {
     /** How many messages (in order) should currently be rendered. */
@@ -92,5 +143,9 @@ export const useConversationPlayback = (
     isPlaying,
     play,
     stop,
+    /** The message the notification banner is currently showing, if any. */
+    bannerMessage,
+    /** Whether the banner should be in its "shown" (vs sliding out) state. */
+    bannerVisible,
   }
 }
