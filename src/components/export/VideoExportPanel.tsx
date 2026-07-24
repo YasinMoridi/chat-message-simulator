@@ -16,6 +16,7 @@ import {
   downloadBlob,
   type VideoFrame,
 } from "@/utils/videoExport"
+import { recordFramesToMp4, isWebCodecsExportSupported } from "@/utils/webCodecsVideoExport"
 import { computeRevealTiming } from "@/utils/messageTiming"
 import { TYPING_ANIMATION_CYCLE_MS } from "@/components/chat/TypingIndicator"
 import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
@@ -90,7 +91,7 @@ export const VideoExportPanel = () => {
     [conversation, visibleMessages, revealCount],
   )
 
-  const supported = isVideoRecordingSupported()
+  const supported = isWebCodecsExportSupported() || isVideoRecordingSupported()
   const fileExtension = isMp4MimeType(videoMimeType) ? "mp4" : "webm"
 
   const captureCurrentFrame = async () => {
@@ -190,16 +191,32 @@ export const VideoExportPanel = () => {
 
       setPhase("encoding")
       setProgress({ done: 0, total: frames.length })
-      const { blob, mimeType } = await recordFramesToVideo(
-        frames,
-        {
-          width: exportSettings.width,
-          height: exportSettings.height,
-          fps: 30,
-          soundUrl: NOTIFICATION_SOUND_URL,
-        },
-        (done, total) => setProgress({ done, total }),
-      )
+      // WebCodecs (Chrome/Edge/recent Safari) gives us a real MP4 with an
+      // explicit, fixed keyframe schedule, which is what actually fixes
+      // choppy scrubbing - MediaRecorder leaves that up to the browser's
+      // encoder. Firefox doesn't expose VideoEncoder/AudioEncoder yet, so it
+      // keeps using the MediaRecorder + canvas.captureStream() path below.
+      const { blob, mimeType } = isWebCodecsExportSupported()
+        ? await recordFramesToMp4(
+            frames,
+            {
+              width: exportSettings.width,
+              height: exportSettings.height,
+              fps: 30,
+              soundUrl: NOTIFICATION_SOUND_URL,
+            },
+            (done, total) => setProgress({ done, total }),
+          )
+        : await recordFramesToVideo(
+            frames,
+            {
+              width: exportSettings.width,
+              height: exportSettings.height,
+              fps: 30,
+              soundUrl: NOTIFICATION_SOUND_URL,
+            },
+            (done, total) => setProgress({ done, total }),
+          )
       setVideoMimeType(mimeType)
       setVideoUrl(URL.createObjectURL(blob))
       // Download automatically as soon as the video is ready - no extra click needed.
