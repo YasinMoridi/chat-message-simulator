@@ -1,6 +1,11 @@
 export interface VideoFrame {
-  /** PNG/JPEG data URL for this frame. */
-  dataUrl: string
+  /**
+   * The already-rendered frame. Kept as a live <canvas> (see
+   * exportNodeToCanvas) rather than a data URL - drawing a canvas onto
+   * another canvas is synchronous, so the encode loop below never has to
+   * wait on an <img> decode between frames.
+   */
+  canvas: HTMLCanvasElement
   /** How long (ms) this frame should stay on screen before the next one. */
   holdMs: number
   /** If true, the notification sound plays right as this frame starts. */
@@ -22,14 +27,6 @@ export interface VideoRecordSettings {
    */
   soundUrl?: string
 }
-
-const loadImage = (src: string) =>
-  new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error("Failed to load a rendered frame."))
-    image.src = src
-  })
 
 /**
  * Picks the best codec this browser actually supports, preferring real MP4
@@ -142,7 +139,22 @@ export const recordFramesToVideo = async (
     recorder.onerror = () => reject(new Error("Recording failed."))
   })
 
-  recorder.start()
+  // Passing a timeslice makes the encoder flush a chunk (and, in every
+  // browser we've checked, place a keyframe) roughly every second instead of
+  // wherever it feels like. Without this, a long hold (e.g. the multi-second
+  // gap between messages) can end up inside one huge keyframe-less span, so
+  // scrubbing into the middle of it forces the player to decode from a
+  // keyframe that's seconds away - which is exactly the "gets stuck when I
+  // seek" symptom.
+  const KEYFRAME_INTERVAL_MS = 1000
+  recorder.start(KEYFRAME_INTERVAL_MS)
+
+  // How often we re-draw an unchanged frame during a long hold. Some
+  // encoders treat a run of visually-identical canvas output as a signal to
+  // stop bothering with fresh frames/keyframes for a while - re-drawing the
+  // same pixels periodically keeps the stream "alive" and keeps keyframe
+  // spacing even, on top of the timeslice above.
+  const REDRAW_INTERVAL_MS = 500
 
   try {
     for (let index = 0; index < frames.length; index += 1) {
@@ -151,12 +163,29 @@ export const recordFramesToVideo = async (
         audioEl.currentTime = 0
         void audioEl.play().catch(() => {})
       }
-      const image = await loadImage(frame.dataUrl)
+
       ctx.clearRect(0, 0, canvas.width, canvas.height)
-      ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+      ctx.drawImage(frame.canvas, 0, 0, canvas.width, canvas.height)
       onProgress?.(index + 1, frames.length)
-      const holdMs = Math.max(50, frame.holdMs)
-      await new Promise((resolve) => window.setTimeout(resolve, holdMs))
+
+      let remainingMs = Math.max(50, frame.holdMs)
+      while (remainingMs > 0) {
+        const chunkMs = Math.min(REDRAW_INTERVAL_MS, remainingMs)
+        await new Promise((resolve) => window.setTimeout(resolve, chunkMs))
+        remainingMs -= chunkMs
+        if (remainingMs > 0) {
+          ctx.drawImage(frame.canvas, 0, 0, canvas.width, canvas.height)
+        }
+      }
+
+      // Free this frame's backing store now that it's been drawn. With
+      // dozens of full-resolution canvases queued up for encoding, leaving
+      // them all alive until GC gets around to them is what makes longer
+      // conversations chug partway through. Setting width/height to 0
+      // releases the bitmap immediately. (Never reuse a frame's canvas
+      // object for a later frame after this - build a fresh copy instead.)
+      frame.canvas.width = 0
+      frame.canvas.height = 0
     }
   } finally {
     recorder.stop()

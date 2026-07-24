@@ -8,7 +8,7 @@ import { sizePresets } from "@/constants/exportPresets"
 import { layoutConfigs } from "@/constants/layouts"
 import { useConversationStore } from "@/store/conversationStore"
 import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
-import { exportNodeToImage } from "@/utils/export"
+import { exportNodeToCanvas } from "@/utils/export"
 import {
   recordFramesToVideo,
   isVideoRecordingSupported,
@@ -100,7 +100,7 @@ export const VideoExportPanel = () => {
       scrollRoot.scrollTop = scrollRoot.scrollHeight
     }
     if (!stageRef.current) throw new Error("Preview stage is not ready.")
-    return exportNodeToImage(stageRef.current, {
+    return exportNodeToCanvas(stageRef.current, {
       presetId: exportSettings.presetId,
       width: exportSettings.width,
       height: exportSettings.height,
@@ -157,8 +157,8 @@ export const VideoExportPanel = () => {
           const typingHolds = buildTypingHolds(typingMs)
           for (let step = 0; step < typingHolds.length; step += 1) {
             setTypingPhaseMs((step * TYPING_FRAME_STEP_MS) % TYPING_ANIMATION_CYCLE_MS)
-            const dataUrl = await captureCurrentFrame()
-            frames.push({ dataUrl, holdMs: typingHolds[step] })
+            const canvas = await captureCurrentFrame()
+            frames.push({ canvas, holdMs: typingHolds[step] })
             captured += 1
             setProgress({ done: captured, total: captureTotal })
           }
@@ -166,17 +166,26 @@ export const VideoExportPanel = () => {
 
         setTypingSenderId(null)
         setRevealCount(index + 1)
-        const dataUrl = await captureCurrentFrame()
+        const canvas = await captureCurrentFrame()
         const holdMs =
           message.type === "system" ? message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS : restMs
-        frames.push({ dataUrl, holdMs, playSound: message.type !== "system" })
+        frames.push({ canvas, holdMs, playSound: message.type !== "system" })
         captured += 1
         setProgress({ done: captured, total: captureTotal })
       }
 
       // Hold on the final, fully-revealed frame a bit before the video ends.
+      // Note: this must be a *copy* of the last canvas, not the same
+      // reference - recordFramesToVideo frees each frame's canvas right
+      // after drawing it, and that canvas is still owned by the previous
+      // frame entry too.
       if (frames.length > 0) {
-        frames.push({ dataUrl: frames[frames.length - 1].dataUrl, holdMs: TRAILING_HOLD_MS })
+        const lastCanvas = frames[frames.length - 1].canvas
+        const trailingCanvas = document.createElement("canvas")
+        trailingCanvas.width = lastCanvas.width
+        trailingCanvas.height = lastCanvas.height
+        trailingCanvas.getContext("2d")?.drawImage(lastCanvas, 0, 0)
+        frames.push({ canvas: trailingCanvas, holdMs: TRAILING_HOLD_MS })
       }
 
       setPhase("encoding")

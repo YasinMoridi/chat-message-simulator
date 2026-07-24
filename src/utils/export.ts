@@ -1,4 +1,4 @@
-import { toJpeg, toPng } from "html-to-image"
+import { toCanvas, toJpeg, toPng } from "html-to-image"
 import type { ExportSettings } from "../store/conversationStore"
 
 const IMAGE_LOAD_TIMEOUT_MS = 3000
@@ -149,6 +149,53 @@ export const exportNodeToImage = async (
         : toPng(clone, commonOptions)
 
     return await withTimeout(exportPromise, EXPORT_TIMEOUT_MS, "Export timed out")
+  } finally {
+    cleanup()
+  }
+}
+
+/**
+ * Same render pipeline as exportNodeToImage (clone, wait for images, apply
+ * the offset/scroll transform), but resolves with the rendered <canvas>
+ * itself instead of a PNG data URL.
+ *
+ * Video export used to call exportNodeToImage per frame and hand the
+ * resulting data URL to <img>.onload later just to draw it into another
+ * canvas - that's a full PNG encode followed by a full PNG decode on every
+ * single frame, for no reason other than "a string was the shape we had
+ * lying around". Skipping straight to a canvas removes both of those steps.
+ */
+export const exportNodeToCanvas = async (
+  node: HTMLElement,
+  settings: ExportSettings,
+  options?: ExportRenderOptions,
+): Promise<HTMLCanvasElement> => {
+  const { clone, cleanup } = buildExportClone(node, options)
+  const imagePlaceholder =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII="
+  const transform = options?.offset
+    ? `translate(${-options.offset.x}px, ${-options.offset.y}px) scale(1)`
+    : "scale(1)"
+  try {
+    await waitForImages(clone)
+
+    const canvasPromise = toCanvas(clone, {
+      width: settings.width,
+      height: settings.height,
+      pixelRatio: settings.scale,
+      cacheBust: true,
+      useCORS: true,
+      imagePlaceholder,
+      style: {
+        transform,
+        transformOrigin: "top left",
+        width: `${settings.width}px`,
+        height: `${settings.height}px`,
+        "--chat-radius": "0px",
+      },
+    })
+
+    return await withTimeout(canvasPromise, EXPORT_TIMEOUT_MS, "Export timed out")
   } finally {
     cleanup()
   }
