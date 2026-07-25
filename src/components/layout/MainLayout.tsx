@@ -163,8 +163,8 @@ export const MainLayout = () => {
       const subMessages = subConversationsForPlayback[activeThread.participantId] ?? []
       // Only attach the live draft bubble here if it actually belongs to
       // this side-chat (i.e. it's being composed in this thread's own
-      // LinkedConversationEditor) - otherwise a draft left over from the
-      // main conversation's builder could leak into this screen.
+      // builder tab) - otherwise a draft left over from the main
+      // conversation's builder could leak into this screen.
       const draftBelongsToThread =
         draftPreviewMessage &&
         (draftPreviewMessage.senderId === selfId ||

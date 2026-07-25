@@ -33,6 +33,7 @@ import {
   DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
 } from "@/types/message"
 import { useConversationStore } from "@/store/conversationStore"
+import { getSelfParticipantId } from "@/components/layout/ChatLayout"
 import { MessageForm } from "@/components/editor/MessageForm"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -103,6 +104,8 @@ interface EasyMessageFields {
   notificationAutoOpenDelayMs?: number
   /** Raw `link=Name` value from the tag block - resolved to a participant id by the caller, which has the roster. */
   linkedParticipantName?: string
+  /** Only meaningful inside a linked chat's own thread - see Message["returnToParent"]. */
+  returnToParent?: boolean
 }
 
 /** Turns a parsed tag map into the full set of message fields easy mode understands. */
@@ -169,6 +172,8 @@ const fieldsFromEasyTags = (tags: EasyTags): EasyMessageFields => {
       ? tags.link.trim()
       : undefined
 
+  const returnToParent = tags.return === true ? true : undefined
+
   return {
     type,
     status,
@@ -181,6 +186,7 @@ const fieldsFromEasyTags = (tags: EasyTags): EasyMessageFields => {
     notificationAutoOpen,
     notificationAutoOpenDelayMs,
     linkedParticipantName,
+    returnToParent,
   }
 }
 
@@ -199,6 +205,7 @@ const easyTagsFromMessage = (message: Message, participants: Participant[]): str
   }
   if (message.status !== "sent") tags.push(`status=${message.status}`)
   if (message.isHidden) tags.push("hidden")
+  if (message.returnToParent) tags.push("return")
 
   if (message.type === "notification") {
     if (message.notificationClickable) tags.push("clickable")
@@ -324,17 +331,25 @@ const MessageRow = ({
 
 export const ConversationBuilder = () => {
   const { t } = useTranslation()
-  const messages = useConversationStore((state) => state.conversation.messages)
+  const mainMessages = useConversationStore((state) => state.conversation.messages)
   const participants = useConversationStore((state) => state.conversation.participants)
   const memberIds = useConversationStore((state) => state.conversation.memberIds)
+  const subConversations = useConversationStore((state) => state.conversation.subConversations)
   const activeParticipantId = useConversationStore((state) => state.activeParticipantId)
-  const addMessage = useConversationStore((state) => state.addMessage)
+  const mainAddMessage = useConversationStore((state) => state.addMessage)
   const addParticipant = useConversationStore((state) => state.addParticipant)
   const ensureConversationMember = useConversationStore((state) => state.ensureConversationMember)
-  const updateMessage = useConversationStore((state) => state.updateMessage)
-  const deleteMessage = useConversationStore((state) => state.deleteMessage)
-  const duplicateMessage = useConversationStore((state) => state.duplicateMessage)
-  const setMessages = useConversationStore((state) => state.setMessages)
+  const mainUpdateMessage = useConversationStore((state) => state.updateMessage)
+  const mainDeleteMessage = useConversationStore((state) => state.deleteMessage)
+  const mainDuplicateMessage = useConversationStore((state) => state.duplicateMessage)
+  const mainSetMessages = useConversationStore((state) => state.setMessages)
+  const addSubConversationMessage = useConversationStore((state) => state.addSubConversationMessage)
+  const updateSubConversationMessage = useConversationStore((state) => state.updateSubConversationMessage)
+  const deleteSubConversationMessage = useConversationStore((state) => state.deleteSubConversationMessage)
+  const duplicateSubConversationMessage = useConversationStore(
+    (state) => state.duplicateSubConversationMessage,
+  )
+  const setSubConversationMessages = useConversationStore((state) => state.setSubConversationMessages)
 
   // Who's actually chatting in this conversation right now, as opposed to
   // the full character roster - the sender dropdown should only offer
@@ -354,6 +369,86 @@ export const ConversationBuilder = () => {
   const [easyError, setEasyError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null)
   const toastTimerRef = useRef<number | null>(null)
+
+  // Which chat this whole builder is currently editing - the main
+  // conversation, or one linked participant's own separate side-chat
+  // (opened via a clickable+linked notification back in the main
+  // conversation). Everything below - the message list, standard/easy
+  // editors, add-message form - operates on whichever thread is active, so
+  // a linked chat gets exactly the same authoring tools as the main one
+  // instead of a cramped nested editor.
+  const [activeThreadTab, setActiveThreadTab] = useState<"main" | string>("main")
+
+  // Every participant with a side-chat of their own: either because some
+  // notification in the main conversation currently links to them, or
+  // because they already have messages written (even if that notification
+  // was since unlinked/deleted) - so nothing already written ever becomes
+  // unreachable.
+  const linkedThreadParticipants = useMemo(() => {
+    const ids = new Set<string>()
+    mainMessages.forEach((message) => {
+      if (message.type === "notification" && message.notificationClickable && message.linkedParticipantId) {
+        ids.add(message.linkedParticipantId)
+      }
+    })
+    ;(subConversations ?? []).forEach((thread) => {
+      if (thread.messages.length > 0) ids.add(thread.participantId)
+    })
+    return Array.from(ids)
+      .map((id) => participants.find((participant) => participant.id === id))
+      .filter((participant): participant is Participant => Boolean(participant))
+  }, [mainMessages, subConversations, participants])
+
+  // Fall back to the main tab if the thread that was open got unlinked/deleted.
+  useEffect(() => {
+    if (activeThreadTab === "main") return
+    if (linkedThreadParticipants.some((participant) => participant.id === activeThreadTab)) return
+    setActiveThreadTab("main")
+  }, [activeThreadTab, linkedThreadParticipants])
+
+  const isSubTab = activeThreadTab !== "main"
+  const subParticipantId = isSubTab ? activeThreadTab : null
+  const subOtherParticipant = subParticipantId
+    ? participants.find((participant) => participant.id === subParticipantId) ?? null
+    : null
+  const subSelfId = getSelfParticipantId(participants, activeParticipantId)
+  const subSelfParticipant = participants.find((participant) => participant.id === subSelfId) ?? null
+  // The two people in the currently-open linked chat - "you" plus whoever
+  // it's actually with. Null when the main conversation is active, or when
+  // either side can't be resolved (e.g. no participants at all yet).
+  const subThreadMembers = useMemo(
+    () => (subOtherParticipant && subSelfParticipant ? [subSelfParticipant, subOtherParticipant] : null),
+    [subOtherParticipant, subSelfParticipant],
+  )
+
+  // Everything below reads/writes through these instead of the main-only
+  // bindings above, so the exact same UI (list, standard editor, easy
+  // editor, add-message form) works whether "main" or a linked participant's
+  // thread is currently open.
+  const messages = isSubTab
+    ? (subConversations ?? []).find((thread) => thread.participantId === subParticipantId)?.messages ?? []
+    : mainMessages
+  const threadMembers = isSubTab && subThreadMembers ? subThreadMembers : chatMembers
+  const setMessages = (next: Message[]) => {
+    if (isSubTab && subParticipantId) setSubConversationMessages(subParticipantId, next)
+    else mainSetMessages(next)
+  }
+  const addMessage = (payload: Parameters<typeof mainAddMessage>[0]) => {
+    if (isSubTab && subParticipantId) addSubConversationMessage(subParticipantId, payload)
+    else mainAddMessage(payload)
+  }
+  const updateMessage = (messageId: string, updates: Partial<Message>) => {
+    if (isSubTab && subParticipantId) updateSubConversationMessage(subParticipantId, messageId, updates)
+    else mainUpdateMessage(messageId, updates)
+  }
+  const deleteMessage = (messageId: string) => {
+    if (isSubTab && subParticipantId) deleteSubConversationMessage(subParticipantId, messageId)
+    else mainDeleteMessage(messageId)
+  }
+  const duplicateMessage = (messageId: string) => {
+    if (isSubTab && subParticipantId) duplicateSubConversationMessage(subParticipantId, messageId)
+    else mainDuplicateMessage(messageId)
+  }
 
   const { globalDate, hasMixedDates } = useMemo(() => {
     if (messages.length === 0) {
@@ -399,7 +494,12 @@ export const ConversationBuilder = () => {
     )
   }
 
+  // Who "<" stands for in the currently active thread - the main
+  // conversation's activeParticipantId picker, or "you" in a linked chat.
+  const threadSelfId = isSubTab ? subSelfId : activeParticipantId
+
   const resolveReceiverId = () => {
+    if (isSubTab) return subOtherParticipant?.id ?? ""
     const fallback = chatMembers[0]?.id ?? ""
     if (!activeParticipantId) return fallback
     return chatMembers.find((participant) => participant.id !== activeParticipantId)?.id ?? fallback
@@ -429,7 +529,7 @@ export const ConversationBuilder = () => {
     messages
       .map((message) => {
         let marker: string
-        if (message.senderId === activeParticipantId) marker = "<"
+        if (message.senderId === threadSelfId) marker = "<"
         else if (message.senderId === resolveReceiverId()) marker = ">"
         else {
           const participant = participants.find((candidate) => candidate.id === message.senderId)
@@ -451,7 +551,7 @@ export const ConversationBuilder = () => {
   }
 
   const handleEasyApply = () => {
-    if (!activeParticipantId) {
+    if (!threadSelfId) {
       setEasyError(t.builder.easyModeAtLeastOneParticipant)
       showToast(t.builder.easyModeAtLeastOneParticipant, "error")
       return
@@ -461,6 +561,7 @@ export const ConversationBuilder = () => {
     type RawEntry = { marker: string; textParts: string[]; tags: EasyTags }
     const rawEntries: RawEntry[] = []
     let hadContinuationWithoutEntry = false
+    let hadNamedLineInSubThread = false
 
     easyInput.split("\n").forEach((rawLine) => {
       const trimmed = rawLine.trim()
@@ -471,12 +572,19 @@ export const ConversationBuilder = () => {
       if (trimmed[0] === "<" || trimmed[0] === ">") {
         marker = trimmed[0]
         rest = trimmed.slice(1).trim()
-      } else {
+      } else if (!isSubTab) {
+        // A third named sender only makes sense in the main, potentially
+        // group, conversation - a linked chat is always just the two of you.
         const namedMatch = trimmed.match(NAMED_LINE_REGEX)
         if (namedMatch) {
           marker = namedMatch[1].trim()
           rest = namedMatch[2]
         }
+      }
+
+      if (marker === null && isSubTab && NAMED_LINE_REGEX.test(trimmed)) {
+        hadNamedLineInSubThread = true
+        return
       }
 
       const { text, tagBlock } = splitTrailingTagBlock(marker === null ? trimmed : rest)
@@ -496,6 +604,11 @@ export const ConversationBuilder = () => {
       Object.assign(last.tags, tags)
     })
 
+    if (hadNamedLineInSubThread) {
+      setEasyError(t.builder.easyModeSubOnlyArrows)
+      showToast(t.builder.easyModeSubOnlyArrows, "error")
+      return
+    }
     if (hadContinuationWithoutEntry || rawEntries.length === 0) {
       setEasyError(t.builder.easyModeStartLine)
       showToast(t.builder.easyModeStartLine, "error")
@@ -503,51 +616,55 @@ export const ConversationBuilder = () => {
     }
 
     // Auto-create a participant for any name that isn't already one of ours.
+    // Only relevant in the main conversation - a linked chat's two members
+    // already exist by definition, and named lines are rejected above.
     const nameToId = new Map<string, string>()
     participants.forEach((participant) => nameToId.set(participant.name.trim().toLowerCase(), participant.id))
-    rawEntries.forEach((entry) => {
-      if (entry.marker === "<" || entry.marker === ">") return
-      const key = entry.marker.toLowerCase()
-      if (nameToId.has(key)) return
-      addParticipant({
-        name: entry.marker,
-        status: "online",
-        color: pickEasyModeParticipantColor(nameToId.size),
+    if (!isSubTab) {
+      rawEntries.forEach((entry) => {
+        if (entry.marker === "<" || entry.marker === ">") return
+        const key = entry.marker.toLowerCase()
+        if (nameToId.has(key)) return
+        addParticipant({
+          name: entry.marker,
+          status: "online",
+          color: pickEasyModeParticipantColor(nameToId.size),
+        })
+        const created = useConversationStore.getState().conversation.participants.at(-1)
+        if (created) nameToId.set(key, created.id)
       })
-      const created = useConversationStore.getState().conversation.participants.at(-1)
-      if (created) nameToId.set(key, created.id)
-    })
-    // Everyone the script actually gives a line to is chatting in this main
-    // conversation, whether they were just created or already existed as a
-    // benched roster character. (nameToId also holds every OTHER roster
-    // participant for lookup purposes, so only touch the ones this script
-    // actually used.)
-    const usedKeys = new Set(
-      rawEntries
-        .filter((entry) => entry.marker !== "<" && entry.marker !== ">")
-        .map((entry) => entry.marker.toLowerCase()),
-    )
-    usedKeys.forEach((key) => {
-      const participantId = nameToId.get(key)
-      if (participantId) ensureConversationMember(participantId)
-    })
+      // Everyone the script actually gives a line to is chatting in this main
+      // conversation, whether they were just created or already existed as a
+      // benched roster character. (nameToId also holds every OTHER roster
+      // participant for lookup purposes, so only touch the ones this script
+      // actually used.)
+      const usedKeys = new Set(
+        rawEntries
+          .filter((entry) => entry.marker !== "<" && entry.marker !== ">")
+          .map((entry) => entry.marker.toLowerCase()),
+      )
+      usedKeys.forEach((key) => {
+        const participantId = nameToId.get(key)
+        if (participantId) ensureConversationMember(participantId)
+      })
 
-    // Auto-create a participant for any `link=Name` notification target that
-    // isn't already on the roster - deliberately NOT added as a main-chat
-    // member, since they only exist inside the linked side-chat.
-    rawEntries.forEach((entry) => {
-      const linkName = typeof entry.tags.link === "string" ? entry.tags.link.trim() : ""
-      if (!linkName) return
-      const key = linkName.toLowerCase()
-      if (nameToId.has(key)) return
-      addParticipant({
-        name: linkName,
-        status: "online",
-        color: pickEasyModeParticipantColor(nameToId.size),
+      // Auto-create a participant for any `link=Name` notification target that
+      // isn't already on the roster - deliberately NOT added as a main-chat
+      // member, since they only exist inside the linked side-chat.
+      rawEntries.forEach((entry) => {
+        const linkName = typeof entry.tags.link === "string" ? entry.tags.link.trim() : ""
+        if (!linkName) return
+        const key = linkName.toLowerCase()
+        if (nameToId.has(key)) return
+        addParticipant({
+          name: linkName,
+          status: "online",
+          color: pickEasyModeParticipantColor(nameToId.size),
+        })
+        const created = useConversationStore.getState().conversation.participants.at(-1)
+        if (created) nameToId.set(key, created.id)
       })
-      const created = useConversationStore.getState().conversation.participants.at(-1)
-      if (created) nameToId.set(key, created.id)
-    })
+    }
 
     let hadMissingReceiver = false
     const finalEntries: Array<
@@ -556,7 +673,7 @@ export const ConversationBuilder = () => {
 
     rawEntries.forEach((entry) => {
       let senderId: string | undefined
-      if (entry.marker === "<") senderId = activeParticipantId
+      if (entry.marker === "<") senderId = threadSelfId
       else if (entry.marker === ">") {
         if (!receiverId) {
           hadMissingReceiver = true
@@ -572,9 +689,12 @@ export const ConversationBuilder = () => {
       const content = entry.textParts.filter(Boolean).join("\n")
       if (!content && fields.type !== "image") return
 
-      const linkedParticipantId = fields.linkedParticipantName
-        ? nameToId.get(fields.linkedParticipantName.toLowerCase())
-        : undefined
+      // A notification's `link=` only makes sense in the main conversation -
+      // a linked chat can't itself open another linked chat.
+      const linkedParticipantId =
+        !isSubTab && fields.linkedParticipantName
+          ? nameToId.get(fields.linkedParticipantName.toLowerCase())
+          : undefined
 
       finalEntries.push({ senderId, content, linkedParticipantId, ...fields })
     })
@@ -609,6 +729,7 @@ export const ConversationBuilder = () => {
         notificationAutoOpen: entry.notificationAutoOpen,
         notificationAutoOpenDelayMs: entry.notificationAutoOpenDelayMs,
         linkedParticipantId: entry.linkedParticipantId,
+        returnToParent: isSubTab ? entry.returnToParent : undefined,
       }
     })
 
@@ -619,20 +740,61 @@ export const ConversationBuilder = () => {
 
   const hasHidden = messages.some((message) => message.isHidden)
   const hasVisible = messages.some((message) => !message.isHidden)
-  const activeParticipant = participants.find((participant) => participant.id === activeParticipantId)
+  const activeParticipant = participants.find((participant) => participant.id === threadSelfId)
   const receiverParticipant = participants.find(
     (participant) => participant.id === resolveReceiverId(),
   )
+
+  const handleThreadTabChange = (tab: "main" | string) => {
+    if (tab === activeThreadTab) return
+    setActiveThreadTab(tab)
+    setEditingId(null)
+    setOpenActionsId(null)
+    setIsAddOpen(false)
+    setEasyError(null)
+    // The easy editor's text belongs to whichever thread was open when it
+    // was last (re)generated - switch it over so it doesn't show the wrong
+    // conversation, or get accidentally applied to the wrong one.
+    if (viewMode === "easy") setEasyInput("")
+  }
 
   return (
     <TooltipProvider>
       <div className="space-y-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900">{t.builder.title}</h3>
+          <h3 className="text-sm font-semibold text-slate-900">
+            {isSubTab && subOtherParticipant
+              ? t.messageForm.linkedThreadEditorTitle.replace("{name}", subOtherParticipant.name)
+              : t.builder.title}
+          </h3>
           <p className="text-xs text-slate-500">
-            {t.builder.subtitle}
+            {isSubTab ? t.builder.threadTabHint : t.builder.subtitle}
           </p>
         </div>
+
+        {linkedThreadParticipants.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
+            <Button
+              type="button"
+              size="sm"
+              variant={activeThreadTab === "main" ? "default" : "outline"}
+              onClick={() => handleThreadTabChange("main")}
+            >
+              {t.builder.mainThreadTab}
+            </Button>
+            {linkedThreadParticipants.map((participant) => (
+              <Button
+                key={participant.id}
+                type="button"
+                size="sm"
+                variant={activeThreadTab === participant.id ? "default" : "outline"}
+                onClick={() => handleThreadTabChange(participant.id)}
+              >
+                {t.builder.threadTabPrefix} {participant.name}
+              </Button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -720,15 +882,29 @@ export const ConversationBuilder = () => {
                     setEasyInput(event.target.value)
                     if (easyError) setEasyError(null)
                   }}
-                  placeholder={`< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram link="Sarah"]`}
+                  placeholder={
+                    isSubTab
+                      ? `< ${activeParticipant?.name ?? "You"} message\n> ${receiverParticipant?.name ?? "Them"} message [delay=1.5]\n> Return message [return]`
+                      : `< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram link="Sarah"]`
+                  }
                   className="min-h-[280px] resize-y font-mono"
                 />
                 <div className="space-y-1 text-xs text-slate-500">
-                  <p>
-                    <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "Sender"},{" "}
-                    <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Receiver"},{" "}
-                    <span className="font-semibold">Name:</span>{t.builder.easyHelpNameNote}
-                  </p>
+                  {isSubTab ? (
+                    <p>
+                      <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "You"},{" "}
+                      <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Them"} - this
+                      is just the two of you, so no other names or <span className="font-mono">link=</span> here.
+                      Add <span className="font-mono">[return]</span> to a line to have playback jump back to
+                      the main conversation right after that message.
+                    </p>
+                  ) : (
+                    <p>
+                      <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "Sender"},{" "}
+                      <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Receiver"},{" "}
+                      <span className="font-semibold">Name:</span>{t.builder.easyHelpNameNote}
+                    </p>
+                  )}
                   <p>
                     {t.builder.easyHelpTagsIntro}{" "}
                     <span className="font-mono font-semibold">[brackets]</span>{t.builder.easyHelpTagsBody}
@@ -890,13 +1066,15 @@ export const ConversationBuilder = () => {
                             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                               <MessageForm
                                 key={message.id}
-                                participants={chatMembers}
-                                rosterParticipants={participants}
+                                participants={threadMembers}
+                                rosterParticipants={isSubTab ? undefined : participants}
                                 initial={message}
-                                defaultSenderId={activeParticipantId}
+                                defaultSenderId={isSubTab ? subOtherParticipant?.id : activeParticipantId}
                                 compact
                                 advancedOpen={isAdvancedOpen}
                                 onToggleAdvanced={() => setIsAdvancedOpen((prev) => !prev)}
+                                isSubMessage={isSubTab}
+                                onJumpToLinkedThread={handleThreadTabChange}
                                 onSubmit={(payload) => {
                                   updateMessage(message.id, payload)
                                   setEditingId(null)
@@ -922,13 +1100,15 @@ export const ConversationBuilder = () => {
               {isAddOpen ? (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <MessageForm
-                    key="new"
-                    participants={chatMembers}
-                    rosterParticipants={participants}
+                    key={isSubTab ? `new-${activeThreadTab}` : "new"}
+                    participants={threadMembers}
+                    rosterParticipants={isSubTab ? undefined : participants}
                     initial={null}
-                    defaultSenderId={activeParticipantId}
+                    defaultSenderId={isSubTab ? subOtherParticipant?.id : activeParticipantId}
                     compact
                     resetOnSubmit
+                    isSubMessage={isSubTab}
+                    onJumpToLinkedThread={handleThreadTabChange}
                     onSubmit={(payload) => {
                       addMessage(payload)
                     }}

@@ -165,6 +165,8 @@ export const translations = {
         "Write what happens once this chat opens. Mark a message with \"return to main chat\" if the story should jump back afterwards - otherwise it just ends here.",
       linkedThreadEmpty: "No messages yet in this chat.",
       linkedThreadAddMessage: "Add message to this chat",
+      linkedThreadJumpHint: "This notification opens a separate chat when tapped - write its messages there, not here.",
+      linkedThreadJumpButton: "Edit messages in that chat",
       returnToParent: "Return to main chat after this",
       returnToParentHint:
         "Once this message finishes revealing, playback closes this chat and continues the main conversation right where it paused.",
@@ -199,6 +201,11 @@ export const translations = {
       easyModeNeedReceiver: "Add a second participant (or address lines by name) before using '>'.",
       easyModeNothingToApply: "Nothing to apply - add at least one message line.",
       easyModeApplied: "Easy changes applied.",
+      easyModeSubOnlyArrows: "Inside a linked chat, start each line with < or > only - it's just the two of you here.",
+      mainThreadTab: "Main conversation",
+      threadTabPrefix: "Chat with",
+      threadTabHint:
+        "This is the separate chat that opens when the linked notification back in the main conversation is tapped.",
       easyHelpLine1a: " = ",
       easyHelpNameNote:
         " = anyone else - typing a new name adds them as a participant. New lines become new messages, timestamps default to now.",
@@ -374,6 +381,8 @@ export const translations = {
         "بنویس بعد از باز شدن این چت چی می‌گذره. اگه لازمه داستان بعدش برگرده به چت اصلی، یه پیام رو با «برگشت به چت اصلی» علامت بزن؛ وگرنه همین‌جا تموم می‌شه.",
       linkedThreadEmpty: "هنوز پیامی توی این چت نیست.",
       linkedThreadAddMessage: "افزودن پیام به این چت",
+      linkedThreadJumpHint: "با تپ روی این نوتیف، یه چت جدا باز می‌شه - پیام‌هاش رو اونجا بنویس، نه اینجا.",
+      linkedThreadJumpButton: "ویرایش پیام‌های اون چت",
       returnToParent: "بعد از این پیام برگرد به چت اصلی",
       returnToParentHint:
         "وقتی این پیام کامل نشون داده شد، پخش این چت بسته می‌شه و مکالمه‌ی اصلی از همون‌جایی که مکث کرده بود ادامه پیدا می‌کنه.",
@@ -408,6 +417,10 @@ export const translations = {
       easyModeNeedReceiver: "قبل از استفاده از '>' یه شرکت‌کننده دوم اضافه کن (یا خط رو با اسم مشخص کن).",
       easyModeNothingToApply: "چیزی برای اعمال نیست - حداقل یک خط پیام اضافه کن.",
       easyModeApplied: "تغییرات حالت Easy اعمال شد.",
+      easyModeSubOnlyArrows: "توی یه چت جدا، هر خط رو فقط با < یا > شروع کن - اینجا فقط شما دو نفرید.",
+      mainThreadTab: "مکالمه اصلی",
+      threadTabPrefix: "چت با",
+      threadTabHint: "این همون چت جدایی‌ه که با کلیک روی نوتیف مرتبط توی مکالمه اصلی باز می‌شه.",
       easyHelpLine1a: " = ",
       easyHelpNameNote:
         " = هر کس دیگه‌ای - تایپ کردن یه اسم جدید، اون رو به‌عنوان شرکت‌کننده اضافه می‌کنه. هر خط جدید یه پیام جدید می‌شه، زمان‌ها هم پیش‌فرض روی الان تنظیم می‌شن.",

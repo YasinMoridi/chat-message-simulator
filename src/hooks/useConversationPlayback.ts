@@ -150,7 +150,7 @@ export const useConversationPlayback = (
   // Same as above, but for whichever linked side-chat is currently open: once
   // its scripted autoplay has finished (or if it's just sitting open), keep
   // showing every message it actually has - so messages added, edited, or
-  // removed via the LinkedConversationEditor after a notification opened
+  // removed via that participant's chat tab in the builder after a notification opened
   // this chat show up immediately instead of staying stuck at the count from
   // whenever the auto-play step loop last touched it.
   useEffect(() => {

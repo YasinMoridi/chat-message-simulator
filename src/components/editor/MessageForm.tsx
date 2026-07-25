@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react"
-import { LinkedConversationEditor } from "@/components/editor/LinkedConversationEditor"
 import type { Message } from "@/types/message"
 import {
   DEFAULT_MESSAGE_DELAY_MS,
@@ -42,6 +41,14 @@ interface MessageFormProps {
    * notification-authoring block for a single "return to main chat" toggle.
    */
   isSubMessage?: boolean
+  /**
+   * Called with a participant id when the person clicks "edit messages in
+   * that chat" next to the linked-conversation picker. The parent (which
+   * owns the main/thread tab switcher) is expected to switch views to that
+   * participant's own thread - this form has no way to show that editor
+   * itself anymore.
+   */
+  onJumpToLinkedThread?: (participantId: string) => void
   onSubmit: (payload: {
     senderId: string
     content: string
@@ -87,6 +94,7 @@ export const MessageForm = ({
   advancedOpen,
   onToggleAdvanced,
   isSubMessage = false,
+  onJumpToLinkedThread,
   onSubmit,
   onCancel,
 }: MessageFormProps) => {
@@ -623,7 +631,20 @@ export const MessageForm = ({
                     </p>
                   </div>
                   {linkedParticipantId ? (
-                    <LinkedConversationEditor participantId={linkedParticipantId} />
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2">
+                      <p className="text-[11px] text-slate-500">{t.messageForm.linkedThreadJumpHint}</p>
+                      {onJumpToLinkedThread ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => onJumpToLinkedThread(linkedParticipantId)}
+                        >
+                          {t.messageForm.linkedThreadJumpButton}
+                        </Button>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
               ) : null}
