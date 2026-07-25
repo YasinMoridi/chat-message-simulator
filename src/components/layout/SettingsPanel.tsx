@@ -7,9 +7,11 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
-import { clamp, getConversationTitle, readFileAsDataUrl } from "@/utils/helpers"
+import { clamp, getConversationTitle, isGroupConversation, readFileAsDataUrl } from "@/utils/helpers"
+import { useTranslation } from "@/i18n/useTranslation"
 
 export const SettingsPanel = () => {
+  const { t } = useTranslation()
   const layoutId = useConversationStore((state) => state.layoutId)
   const themeId = useConversationStore((state) => state.themeId)
   const setTheme = useConversationStore((state) => state.setTheme)
@@ -25,7 +27,7 @@ export const SettingsPanel = () => {
   const backgroundColor = useConversationStore((state) => state.backgroundColor)
   const setBackgroundColor = useConversationStore((state) => state.setBackgroundColor)
 
-  const isGroup = conversation.participants.length > 2
+  const isGroup = isGroupConversation(conversation)
   const title = getConversationTitle(conversation)
 
   const layout = layoutConfigs.find((item) => item.id === layoutId) ?? layoutConfigs[0]
@@ -35,22 +37,22 @@ export const SettingsPanel = () => {
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-sm font-semibold text-slate-900">Appearance & Preview</h3>
-        <p className="text-xs text-slate-500">Control layout, theme, and preview behavior.</p>
+        <h3 className="text-sm font-semibold text-slate-900">{t.settings.title}</h3>
+        <p className="text-xs text-slate-500">{t.settings.subtitle}</p>
       </div>
 
       <div className="space-y-2">
-        <Label>Layout</Label>
+        <Label>{t.settings.layout}</Label>
         <LayoutSelector />
       </div>
 
       <div className="space-y-2">
-        <Label>{isGroup ? "Group name" : "Conversation"}</Label>
+        <Label>{isGroup ? t.settings.groupName : t.settings.conversation}</Label>
         {isGroup ? (
           <Input
             value={conversation.groupName ?? ""}
             onChange={(event) => setGroupName(event.target.value)}
-            placeholder="Enter group name"
+            placeholder={t.settings.groupNamePlaceholder}
           />
         ) : (
           <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
@@ -61,8 +63,8 @@ export const SettingsPanel = () => {
 
       <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
         <div>
-          <div className="text-sm font-medium text-slate-900">Theme</div>
-          <div className="text-xs text-slate-500">Switch between light and dark.</div>
+          <div className="text-sm font-medium text-slate-900">{t.settings.theme}</div>
+          <div className="text-xs text-slate-500">{t.settings.themeDescription}</div>
         </div>
         <Switch
           checked={isDark}
@@ -73,17 +75,17 @@ export const SettingsPanel = () => {
 
       <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
         <div>
-          <div className="text-sm font-medium text-slate-900">Chrome</div>
-          <div className="text-xs text-slate-500">Show header and input bar.</div>
+          <div className="text-sm font-medium text-slate-900">{t.settings.chrome}</div>
+          <div className="text-xs text-slate-500">{t.settings.chromeDescription}</div>
         </div>
         <Switch checked={ui.showChrome} onCheckedChange={(value) => setUi({ showChrome: value })} />
       </div>
 
       <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
         <div>
-          <div className="text-sm font-medium text-slate-900">Notification banner</div>
+          <div className="text-sm font-medium text-slate-900">{t.settings.notificationBanner}</div>
           <div className="text-xs text-slate-500">
-            Show the phone-style "new message" banner at the top of the screen.
+            {t.settings.notificationBannerDescription}
           </div>
         </div>
         <Switch
@@ -93,7 +95,7 @@ export const SettingsPanel = () => {
       </div>
 
       <div className="space-y-2">
-        <Label>Zoom</Label>
+        <Label>{t.settings.zoom}</Label>
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
@@ -101,7 +103,7 @@ export const SettingsPanel = () => {
             onClick={() => setUi({ zoom: clamp(ui.zoom - 0.1, 0.5, 2) })}
           >
             <Minus className="h-4 w-4" />
-            Zoom out
+            {t.settings.zoomOut}
           </Button>
           <Button
             variant="outline"
@@ -109,25 +111,25 @@ export const SettingsPanel = () => {
             onClick={() => setUi({ zoom: clamp(ui.zoom + 0.1, 0.5, 2) })}
           >
             <Plus className="h-4 w-4" />
-            Zoom in
+            {t.settings.zoomIn}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setUi({ zoom: 1 })}>
             <ScreenShare className="h-4 w-4" />
-            Reset
+            {t.settings.resetZoom}
           </Button>
         </div>
       </div>
 
       <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2">
         <div>
-          <div className="text-sm font-medium text-slate-900">Auto-fit preview</div>
-          <div className="text-xs text-slate-500">Scale to fit the preview panel.</div>
+          <div className="text-sm font-medium text-slate-900">{t.settings.autoFit}</div>
+          <div className="text-xs text-slate-500">{t.settings.autoFitDescription}</div>
         </div>
         <Switch checked={ui.autoFit} onCheckedChange={(value) => setUi({ autoFit: value })} />
       </div>
 
       <div className="space-y-2">
-        <Label>Background image</Label>
+        <Label>{t.settings.backgroundImage}</Label>
         <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3">
           <div className="grid gap-3 sm:grid-cols-[120px_1fr]">
             <div className="h-24 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
@@ -136,7 +138,7 @@ export const SettingsPanel = () => {
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-1 text-xs text-slate-400">
                   <ImagePlus className="h-4 w-4" />
-                  No image
+                  {t.settings.noImage}
                 </div>
               )}
             </div>
@@ -144,18 +146,18 @@ export const SettingsPanel = () => {
               <Button asChild variant="outline" className="w-full justify-center gap-2">
                 <label htmlFor="bg-upload" className="flex cursor-pointer items-center gap-2">
                   <ImagePlus className="h-4 w-4" />
-                  Upload image
+                  {t.settings.uploadImage}
                 </label>
               </Button>
               <div className="flex items-center justify-between text-xs text-slate-500">
-                <span>Uploads only (best for exports)</span>
+                <span>{t.settings.uploadsOnly}</span>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={clearBackgroundImage}
                   disabled={!backgroundImageUrl}
                 >
-                  Clear
+                  {t.common.clear}
                 </Button>
               </div>
               <input
@@ -178,7 +180,7 @@ export const SettingsPanel = () => {
             </div>
           </div>
           <div className="space-y-2">
-            <Label className="text-xs">Background opacity</Label>
+            <Label className="text-xs">{t.settings.backgroundOpacity}</Label>
             <div className="flex items-center gap-3">
               <Slider
                 min={0}
@@ -208,11 +210,11 @@ export const SettingsPanel = () => {
       </div>
 
       <div className="space-y-2">
-        <Label>Background color</Label>
+        <Label>{t.settings.backgroundColor}</Label>
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
           <div className="flex items-center gap-2">
             <PaintBucket className="h-4 w-4 text-slate-500" />
-            <span className="text-xs text-slate-500">Fill</span>
+            <span className="text-xs text-slate-500">{t.settings.fill}</span>
           </div>
           <Input
             type="color"
@@ -233,7 +235,7 @@ export const SettingsPanel = () => {
             onClick={() => setBackgroundColor("")}
             disabled={!backgroundColor}
           >
-            Reset
+            {t.settings.resetZoom}
           </Button>
         </div>
       </div>

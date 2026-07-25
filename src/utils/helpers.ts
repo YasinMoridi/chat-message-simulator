@@ -35,9 +35,28 @@ export const formatInstagramDateSeparator = (timestamp: string) => {
 export const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max)
 
+/**
+ * The roster (`conversation.participants`) can hold far more characters
+ * than are actually chatting right now - `memberIds` narrows it down to
+ * who's actually "in" this conversation. Falls back to the whole roster
+ * for conversations saved before this field existed.
+ */
+export const getConversationMembers = (conversation: Conversation) => {
+  const ids = conversation.memberIds
+  if (!ids || ids.length === 0) return conversation.participants
+  const idSet = new Set(ids)
+  const members = conversation.participants.filter((participant) => idSet.has(participant.id))
+  return members.length ? members : conversation.participants
+}
+
+/** A conversation is a "group" once 3+ of the roster are actually chatting together. */
+export const isGroupConversation = (conversation: Conversation) =>
+  getConversationMembers(conversation).length > 2
+
 export const getConversationTitle = (conversation: Conversation) => {
-  const names = conversation.participants.map((participant) => participant.name).filter(Boolean)
-  if (conversation.participants.length > 2) {
+  const members = getConversationMembers(conversation)
+  const names = members.map((participant) => participant.name).filter(Boolean)
+  if (members.length > 2) {
     return conversation.groupName?.trim() || "Group Chat"
   }
   if (names.length === 0) return "New Chat"

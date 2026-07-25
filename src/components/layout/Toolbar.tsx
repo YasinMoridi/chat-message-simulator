@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react"
-import { FileDown, FileUp, MoreHorizontal, Redo2, Save, Trash2, Undo2 } from "lucide-react"
+import { FileDown, FileUp, Globe, MoreHorizontal, Redo2, Save, Trash2, Undo2 } from "lucide-react"
 import { useConversationStore } from "@/store/conversationStore"
 import { getLayoutConfig } from "@/constants/layouts"
 import { downloadJson, readJsonFile } from "@/utils/storage"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { useTranslation } from "@/i18n/useTranslation"
 import {
   Dialog,
   DialogContent,
@@ -27,19 +28,24 @@ const hasPersistedChange = (state: StoreState, prevState: StoreState) =>
   state.backgroundColor !== prevState.backgroundColor ||
   state.exportSettings !== prevState.exportSettings
 
-const formatRelativeTime = (from: number, to: number) => {
+const formatRelativeTime = (
+  from: number,
+  to: number,
+  labels: { justNow: string; secondsAgo: string; minutesAgo: string; hoursAgo: string; daysAgo: string },
+) => {
   const diffSeconds = Math.max(0, Math.floor((to - from) / 1000))
-  if (diffSeconds < 5) return "just now"
-  if (diffSeconds < 60) return `${diffSeconds}s ago`
+  if (diffSeconds < 5) return labels.justNow
+  if (diffSeconds < 60) return `${diffSeconds}${labels.secondsAgo}`
   const diffMinutes = Math.floor(diffSeconds / 60)
-  if (diffMinutes < 60) return `${diffMinutes}m ago`
+  if (diffMinutes < 60) return `${diffMinutes}${labels.minutesAgo}`
   const diffHours = Math.floor(diffMinutes / 60)
-  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffHours < 24) return `${diffHours}${labels.hoursAgo}`
   const diffDays = Math.floor(diffHours / 24)
-  return `${diffDays}d ago`
+  return `${diffDays}${labels.daysAgo}`
 }
 
 export const Toolbar = () => {
+  const { t, language, setLanguage, dir } = useTranslation()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [isActionsOpen, setIsActionsOpen] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -103,26 +109,29 @@ export const Toolbar = () => {
   }, [canRedo, canUndo, redo, undo])
 
   const autosaveLabel = lastAutosaveAt
-    ? `Autosaved ${formatRelativeTime(lastAutosaveAt, now)}`
-    : "Autosave idle"
+    ? `${t.toolbar.autosavedPrefix} ${formatRelativeTime(lastAutosaveAt, now, t.toolbar)}`
+    : t.toolbar.autosaveIdle
   const layout = getLayoutConfig(layoutId)
   const theme = layout.themes.find((entry) => entry.id === themeId) ?? layout.themes[0]
   const projectBadges = [
-    `${conversation.participants.length} participants`,
-    `${conversation.messages.length} messages`,
+    `${conversation.participants.length} ${t.toolbar.participants}`,
+    `${conversation.messages.length} ${t.toolbar.messages}`,
     `${layout.name} ${theme.name}`,
   ]
 
   return (
     <TooltipProvider>
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/70 px-4 py-3 shadow-lg backdrop-blur">
+      <div
+        dir={dir}
+        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/70 px-4 py-3 shadow-lg backdrop-blur"
+      >
         <div className="flex w-full items-center gap-3 sm:w-auto">
           <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900 text-xs font-semibold uppercase tracking-widest text-white">
             CS
           </div>
           <div className="space-y-0.5">
-            <div className="text-sm font-semibold text-slate-900">Chat Message Simulator</div>
-            <div className="text-xs text-slate-500">Craft and export chat mockups</div>
+            <div className="text-sm font-semibold text-slate-900">{t.toolbar.appName}</div>
+            <div className="text-xs text-slate-500">{t.toolbar.tagline}</div>
             <div className="hidden flex-wrap items-center gap-2 pt-1 sm:flex">
               {projectBadges.map((badge) => (
                 <Badge key={badge} variant="secondary">
@@ -136,6 +145,33 @@ export const Toolbar = () => {
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Badge variant="secondary">{autosaveLabel}</Badge>
 
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm">
+                <Globe className="ml-1 h-3.5 w-3.5 text-slate-400" />
+                <Button
+                  type="button"
+                  variant={language === "en" ? "default" : "ghost"}
+                  size="sm"
+                  className="rounded-full px-2"
+                  onClick={() => setLanguage("en")}
+                >
+                  EN
+                </Button>
+                <Button
+                  type="button"
+                  variant={language === "fa" ? "default" : "ghost"}
+                  size="sm"
+                  className="rounded-full px-2"
+                  onClick={() => setLanguage("fa")}
+                >
+                  فا
+                </Button>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>{t.toolbar.language}</TooltipContent>
+          </Tooltip>
+
           <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 p-1 shadow-sm">
             <Tooltip>
               <TooltipTrigger asChild>
@@ -148,10 +184,10 @@ export const Toolbar = () => {
                   aria-label="Undo"
                 >
                   <Undo2 className="h-4 w-4" />
-                  <span className="hidden sm:inline">Undo</span>
+                  <span className="hidden sm:inline">{t.toolbar.undo}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Undo (Ctrl/Cmd+Z)</TooltipContent>
+              <TooltipContent>{t.toolbar.undoTooltip}</TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -164,10 +200,10 @@ export const Toolbar = () => {
                   aria-label="Redo"
                 >
                   <Redo2 className="h-4 w-4" />
-                  <span className="hidden sm:inline">Redo</span>
+                  <span className="hidden sm:inline">{t.toolbar.redo}</span>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Redo (Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y)</TooltipContent>
+              <TooltipContent>{t.toolbar.redoTooltip}</TooltipContent>
             </Tooltip>
           </div>
 
@@ -175,20 +211,20 @@ export const Toolbar = () => {
             <DialogTrigger asChild>
               <Button variant="outline" size="sm" className="gap-2">
                 <MoreHorizontal className="h-4 w-4" />
-                Actions
+                {t.toolbar.actions}
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Project actions</DialogTitle>
+                <DialogTitle>{t.toolbar.projectActions}</DialogTitle>
                 <DialogDescription>
-                  Manage files, local storage, and project utilities.
+                  {t.toolbar.projectActionsDescription}
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="space-y-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    File
+                    {t.toolbar.file}
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <Button
@@ -199,7 +235,7 @@ export const Toolbar = () => {
                       }}
                     >
                       <FileDown className="h-4 w-4" />
-                      Export JSON
+                      {t.toolbar.exportJson}
                     </Button>
                     <Button
                       variant="secondary"
@@ -209,7 +245,7 @@ export const Toolbar = () => {
                       }}
                     >
                       <FileUp className="h-4 w-4" />
-                      Load JSON
+                      {t.toolbar.loadJson}
                     </Button>
                     <Button
                       variant="secondary"
@@ -220,13 +256,13 @@ export const Toolbar = () => {
                       }}
                     >
                       <Save className="h-4 w-4" />
-                      Save Local
+                      {t.toolbar.saveLocal}
                     </Button>
                   </div>
                 </div>
                 <div className="space-y-2">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Utilities
+                    {t.toolbar.utilities}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button
@@ -237,7 +273,7 @@ export const Toolbar = () => {
                       }}
                     >
                       <Trash2 className="h-4 w-4" />
-                      Reset project
+                      {t.toolbar.resetProject}
                     </Button>
                   </div>
                 </div>
@@ -247,14 +283,14 @@ export const Toolbar = () => {
           <Dialog open={isResetOpen} onOpenChange={setIsResetOpen}>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Reset this project?</DialogTitle>
+                <DialogTitle>{t.toolbar.resetTitle}</DialogTitle>
                 <DialogDescription>
-                  This clears the current conversation, layout, and stored snapshot. You can&apos;t undo this action.
+                  {t.toolbar.resetDescription}
                 </DialogDescription>
               </DialogHeader>
               <div className="flex flex-wrap justify-end gap-2">
                 <Button variant="outline" onClick={() => setIsResetOpen(false)}>
-                  Cancel
+                  {t.toolbar.cancel}
                 </Button>
                 <Button
                   variant="destructive"
@@ -264,7 +300,7 @@ export const Toolbar = () => {
                     setIsResetOpen(false)
                   }}
                 >
-                  Reset project
+                  {t.toolbar.resetProject}
                 </Button>
               </div>
             </DialogContent>

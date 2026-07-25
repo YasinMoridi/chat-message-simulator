@@ -3,7 +3,7 @@ import type { LayoutConfig, LayoutId, LayoutTheme } from "@/types/layout"
 import { ChatHeader } from "@/components/chat/ChatHeader"
 import { ConversationView } from "@/components/chat/ConversationView"
 import { MessageInput } from "@/components/chat/MessageInput"
-import { getConversationTitle } from "@/utils/helpers"
+import { getConversationMembers, getConversationTitle } from "@/utils/helpers"
 
 interface ChatLayoutProps {
   conversation: Conversation
@@ -83,19 +83,22 @@ export const ChatLayout = ({
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
-  const selfId = getSelfParticipantId(conversation.participants, activeParticipantId)
+  // The roster (conversation.participants) can hold far more characters
+  // than are actually chatting right now - only `members` decides whether
+  // this is a direct chat or a group, and who shows in the header.
+  const members = getConversationMembers(conversation)
+  const selfId = getSelfParticipantId(members, activeParticipantId)
   // When "you" are the one being simulated as typing, show it as real
   // keystrokes in the input instead of the dots bubble in the chat log.
   const isSelfTypingLive =
     typingSenderId === selfId && typingDraftText !== null && typingDraftText !== undefined
-  const isGroup = conversation.participants.length > 2
+  const isGroup = members.length > 2
   const headerParticipant = !isGroup
-    ? conversation.participants.find((participant) => participant.id !== selfId) ??
-      conversation.participants[0]
+    ? members.find((participant) => participant.id !== selfId) ?? members[0]
     : undefined
   const title = isGroup ? getConversationTitle(conversation) : headerParticipant?.name ?? "New Chat"
   const subtitle = isGroup
-    ? groupStatusLabel(conversation.participants)
+    ? groupStatusLabel(members)
     : directStatusLabel(headerParticipant?.status, layout.id)
 
   return (
@@ -150,7 +153,7 @@ export const ChatLayout = ({
       <div className="relative flex-1 min-h-0">
         <ConversationView
           messages={conversation.messages}
-          participants={conversation.participants}
+          participants={members}
           layout={layout}
           selfId={selfId}
           mode={conversationMode}

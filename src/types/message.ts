@@ -53,6 +53,46 @@ export interface Message {
    * itself".
    */
   notificationAutoOpenDelayMs?: number
+  /**
+   * Only meaningful when notificationClickable is true. Id of the
+   * participant this notification actually belongs to. When set, tapping
+   * (or auto-tapping) the banner opens a real, separate chat containing
+   * only "you" and this participant - built from that participant's entry
+   * in conversation.subConversations - instead of just revealing the rest
+   * of the current conversation.
+   */
+  linkedParticipantId?: string
+  /**
+   * Only meaningful for a message that lives inside a sub-conversation
+   * (conversation.subConversations). When true, once this message finishes
+   * revealing, playback closes this side-chat and resumes the parent
+   * conversation right where it paused. Ignored everywhere else - if no
+   * message in a sub-conversation sets this, playback simply ends inside
+   * that side-chat once its messages run out.
+   */
+  returnToParent?: boolean
+}
+
+/**
+ * Shared shape for "here's a message to add/update" payloads - used by both
+ * the main conversation and any sub-conversation, so MessageForm doesn't
+ * need to know which one it's feeding.
+ */
+export interface MessageDraftPayload {
+  senderId: string
+  content: string
+  imageUrl?: string
+  timestamp: string
+  type: MessageType
+  status: MessageStatus
+  delayMs?: number
+  notificationOverride?: Message["notificationOverride"]
+  notificationClickable?: boolean
+  notificationOpenDelayMs?: number
+  notificationAutoOpen?: boolean
+  notificationAutoOpenDelayMs?: number
+  linkedParticipantId?: string
+  returnToParent?: boolean
 }
 
 /** Default delay (ms) applied to a message when none is set. */

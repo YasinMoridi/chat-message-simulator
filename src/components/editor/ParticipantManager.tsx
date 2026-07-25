@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch"
 import { VerifiedBadge } from "@/components/ui/verified-badge"
 import { cn } from "@/utils/cn"
 import { readFileAsDataUrl } from "@/utils/helpers"
+import { useTranslation } from "@/i18n/useTranslation"
 
 const emptyParticipant = {
   name: "",
@@ -20,7 +21,10 @@ const emptyParticipant = {
 }
 
 export const ParticipantManager = () => {
+  const { t } = useTranslation()
   const participants = useConversationStore((state) => state.conversation.participants)
+  const memberIds = useConversationStore((state) => state.conversation.memberIds)
+  const toggleConversationMember = useConversationStore((state) => state.toggleConversationMember)
   const activeParticipantId = useConversationStore((state) => state.activeParticipantId)
   const addParticipant = useConversationStore((state) => state.addParticipant)
   const updateParticipant = useConversationStore((state) => state.updateParticipant)
@@ -29,13 +33,15 @@ export const ParticipantManager = () => {
 
   const [draft, setDraft] = useState(emptyParticipant)
   const [error, setError] = useState<string | null>(null)
+  const effectiveMemberIds = memberIds && memberIds.length ? memberIds : participants.map((participant) => participant.id)
+  const memberCount = effectiveMemberIds.length
 
   const validateFile = (file: File) => {
     if (!file.type.startsWith("image/")) {
-      return "Only image files are allowed."
+      return t.participants.onlyImageFiles
     }
     if (file.size > 2 * 1024 * 1024) {
-      return "Image must be smaller than 2MB."
+      return t.participants.imageTooLarge2mb
     }
     return null
   }
@@ -52,7 +58,7 @@ export const ParticipantManager = () => {
       updateParticipant(participantId, { avatarUrl: dataUrl })
     } catch (error) {
       console.error("Failed to read avatar file", error)
-      setError("Could not read the selected image.")
+      setError(t.participants.couldNotReadImage)
     }
   }
 
@@ -68,20 +74,29 @@ export const ParticipantManager = () => {
       setDraft((prev) => ({ ...prev, avatarUrl: dataUrl }))
     } catch (error) {
       console.error("Failed to read avatar file", error)
-      setError("Could not read the selected image.")
+      setError(t.participants.couldNotReadImage)
     }
   }
 
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-sm font-semibold text-slate-900">Participants</h3>
+        <h3 className="text-sm font-semibold text-slate-900">{t.participants.title}</h3>
         <p className="text-xs text-slate-500">
-          Manage contacts, avatars, and choose who is sending the next message.
+          {t.participants.subtitle}
         </p>
       </div>
 
       {error ? <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div> : null}
+
+      <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+        <p className="text-xs text-slate-600">{t.participants.chatMembershipHint}</p>
+        <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 shadow-sm">
+          {memberCount > 2
+            ? t.participants.groupOfCount.replace("{count}", String(memberCount))
+            : t.participants.directChat}
+        </span>
+      </div>
 
       <div className="space-y-3">
         {participants.map((participant) => (
@@ -108,7 +123,7 @@ export const ParticipantManager = () => {
                       onClick={() => updateParticipant(participant.id, { avatarUrl: undefined })}
                     >
                       <X className="h-3 w-3" />
-                      <span className="sr-only">Remove avatar</span>
+                      <span className="sr-only">{t.participants.removeAvatar}</span>
                     </Button>
                   </>
                 ) : (
@@ -149,7 +164,7 @@ export const ParticipantManager = () => {
                 <Input
                   value={participant.name}
                   onChange={(event) => updateParticipant(participant.id, { name: event.target.value })}
-                  placeholder="Name"
+                  placeholder={t.participants.namePlaceholder}
                 />
                 <div className="grid gap-2 sm:grid-cols-2">
                   <Select
@@ -159,13 +174,13 @@ export const ParticipantManager = () => {
                     }
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Status" />
+                      <SelectValue placeholder={t.participants.status} />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="online">Online</SelectItem>
-                      <SelectItem value="offline">Offline</SelectItem>
-                      <SelectItem value="typing">Typing</SelectItem>
-                      <SelectItem value="empty">Empty</SelectItem>
+                      <SelectItem value="online">{t.participants.online}</SelectItem>
+                      <SelectItem value="offline">{t.participants.offline}</SelectItem>
+                      <SelectItem value="typing">{t.participants.typing}</SelectItem>
+                      <SelectItem value="empty">{t.participants.empty}</SelectItem>
                     </SelectContent>
                   </Select>
                   <Input
@@ -175,10 +190,17 @@ export const ParticipantManager = () => {
                   />
                 </div>
                 <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                  <span className="text-xs font-medium text-slate-500">Verified badge</span>
+                  <span className="text-xs font-medium text-slate-500">{t.participants.verifiedBadge}</span>
                   <Switch
                     checked={Boolean(participant.isVerified)}
                     onCheckedChange={(value) => updateParticipant(participant.id, { isVerified: value })}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <span className="text-xs font-medium text-slate-500">{t.participants.inThisChat}</span>
+                  <Switch
+                    checked={effectiveMemberIds.includes(participant.id)}
+                    onCheckedChange={() => toggleConversationMember(participant.id)}
                   />
                 </div>
               </div>
@@ -190,7 +212,7 @@ export const ParticipantManager = () => {
                   onClick={() => setActiveParticipant(participant.id)}
                 >
                   <Star className="h-4 w-4" />
-                  Active
+                  {t.participants.active}
                 </Button>
                 <Button variant="ghost" size="icon" onClick={() => removeParticipant(participant.id)}>
                   <Trash2 className="h-4 w-4" />
@@ -202,17 +224,17 @@ export const ParticipantManager = () => {
       </div>
 
       <div className="rounded-xl border border-dashed border-slate-200 bg-white/70 p-3">
-        <Label className="text-xs uppercase text-slate-400">Add new participant</Label>
+        <Label className="text-xs uppercase text-slate-400">{t.participants.addNewParticipant}</Label>
         <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
           <Input
             value={draft.name}
             onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))}
-            placeholder="Participant name"
+            placeholder={t.participants.participantNamePlaceholder}
           />
           <Button
             onClick={() => {
               if (!draft.name.trim()) {
-                setError("Name is required.")
+                setError(t.participants.nameRequired)
                 return
               }
               addParticipant({
@@ -226,18 +248,18 @@ export const ParticipantManager = () => {
               setError(null)
             }}
           >
-            Add
+            {t.participants.add}
           </Button>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <Button asChild variant="outline" size="sm">
             <label htmlFor="avatar-draft" className="flex items-center gap-2">
               <ImagePlus className="h-4 w-4" />
-              Upload avatar
+              {t.participants.uploadAvatar}
             </label>
           </Button>
           <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2 py-1">
-            <span className="text-xs text-slate-500">Verified</span>
+            <span className="text-xs text-slate-500">{t.participants.verified}</span>
             <Switch
               checked={Boolean(draft.isVerified)}
               onCheckedChange={(value) => setDraft((prev) => ({ ...prev, isVerified: value }))}
@@ -249,7 +271,7 @@ export const ParticipantManager = () => {
               size="sm"
               onClick={() => setDraft((prev) => ({ ...prev, avatarUrl: "" }))}
             >
-              Remove avatar
+              {t.participants.removeAvatarButton}
             </Button>
           ) : null}
           <Input
@@ -257,7 +279,7 @@ export const ParticipantManager = () => {
             value={draft.color}
             onChange={(event) => setDraft((prev) => ({ ...prev, color: event.target.value }))}
           />
-          <span className="text-xs text-slate-500">Uploads only (best for exports)</span>
+          <span className="text-xs text-slate-500">{t.participants.uploadsOnly}</span>
           <input
             id="avatar-draft"
             type="file"

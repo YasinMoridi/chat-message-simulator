@@ -25,7 +25,12 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react"
-import type { Message } from "@/types/message"
+import type { Message, MessageStatus, MessageType } from "@/types/message"
+import {
+  DEFAULT_MESSAGE_DELAY_MS,
+  DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
+  DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
+} from "@/types/message"
 import { useConversationStore } from "@/store/conversationStore"
 import { MessageForm } from "@/components/editor/MessageForm"
 import { Button } from "@/components/ui/button"
@@ -36,6 +41,8 @@ import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/utils/cn"
 import { formatTimestamp, generateId } from "@/utils/helpers"
+import { useTranslation } from "@/i18n/useTranslation"
+import type { TranslationTree } from "@/i18n/translations"
 
 const toDateInputValue = (iso: string) => {
   const date = new Date(iso)
@@ -44,12 +51,179 @@ const toDateInputValue = (iso: string) => {
   return new Date(date.getTime() - offset).toISOString().slice(0, 10)
 }
 
+/** Colors cycled through when easy mode auto-creates a participant for a name it doesn't recognize. */
+const EASY_MODE_PARTICIPANT_COLORS = ["#22c55e", "#0b84ff", "#f97316", "#a855f7", "#ef4444", "#14b8a6"]
+const pickEasyModeParticipantColor = (participantCount: number) =>
+  EASY_MODE_PARTICIPANT_COLORS[participantCount % EASY_MODE_PARTICIPANT_COLORS.length]
+
+/** A line that starts a new entry: "Name: message" (name can't contain ":", "[", "]", or start with < / >). */
+const NAMED_LINE_REGEX = /^([^\s:<>[\]][^:[\]]*):\s*(.*)$/
+
+/** Tokenizes a `[...]` tag block, respecting "quoted values with spaces". */
+const TAG_TOKEN_REGEX = /(?:[^\s"]+|"[^"]*")+/g
+
+type EasyTags = Record<string, string | true>
+
+/** Splits "content [tag tag=value]" into { text, tagBlock }. tagBlock is null if there's no trailing bracket. */
+const splitTrailingTagBlock = (line: string): { text: string; tagBlock: string | null } => {
+  const match = line.match(/^([\s\S]*?)(?:\s*\[([^[\]]*)\])?$/)
+  if (!match) return { text: line, tagBlock: null }
+  return { text: (match[1] ?? "").trimEnd(), tagBlock: match[2] ?? null }
+}
+
+const parseEasyTags = (tagBlock: string): EasyTags => {
+  const tokens = tagBlock.match(TAG_TOKEN_REGEX) ?? []
+  const tags: EasyTags = {}
+  tokens.forEach((token) => {
+    const cleaned = token.replace(/"/g, "")
+    const eqIndex = cleaned.indexOf("=")
+    if (eqIndex === -1) {
+      tags[cleaned.toLowerCase()] = true
+    } else {
+      tags[cleaned.slice(0, eqIndex).toLowerCase()] = cleaned.slice(eqIndex + 1)
+    }
+  })
+  return tags
+}
+
+/** Wraps a tag value in quotes if it contains whitespace, so it round-trips through parseEasyTags. */
+const quoteTagValue = (value: string) => (/\s/.test(value) ? `"${value}"` : value)
+
+interface EasyMessageFields {
+  type: MessageType
+  status: MessageStatus
+  delayMs: number
+  isHidden?: boolean
+  imageUrl?: string
+  notificationOverride?: Message["notificationOverride"]
+  notificationClickable?: boolean
+  notificationOpenDelayMs?: number
+  notificationAutoOpen?: boolean
+  notificationAutoOpenDelayMs?: number
+}
+
+/** Turns a parsed tag map into the full set of message fields easy mode understands. */
+const fieldsFromEasyTags = (tags: EasyTags): EasyMessageFields => {
+  let type: MessageType = "text"
+  const validTypes: MessageType[] = ["text", "system", "image", "notification"]
+  if (typeof tags.type === "string" && validTypes.includes(tags.type.toLowerCase() as MessageType)) {
+    type = tags.type.toLowerCase() as MessageType
+  } else if (tags.notification) type = "notification"
+  else if (tags.system) type = "system"
+  else if (tags.image) type = "image"
+
+  let status: MessageStatus = "sent"
+  if (typeof tags.status === "string") {
+    const lowered = tags.status.toLowerCase()
+    if (lowered === "sent" || lowered === "delivered" || lowered === "read") status = lowered
+  }
+
+  let delayMs = DEFAULT_MESSAGE_DELAY_MS
+  if (typeof tags.delay === "string") {
+    const seconds = Number(tags.delay)
+    if (!Number.isNaN(seconds) && seconds >= 0) delayMs = Math.round(seconds * 1000)
+  }
+
+  const isHidden = tags.hidden === true ? true : undefined
+  const imageUrl = type === "image" && typeof tags.image === "string" ? tags.image : undefined
+
+  const overrideSenderName = typeof tags.as === "string" ? tags.as : undefined
+  const overrideAppName = typeof tags.app === "string" ? tags.app : undefined
+  const overrideAvatarUrl = typeof tags.avatar === "string" ? tags.avatar : undefined
+  const notificationOverride =
+    type === "notification" && (overrideSenderName || overrideAppName || overrideAvatarUrl)
+      ? {
+          enabled: true,
+          senderName: overrideSenderName,
+          appName: overrideAppName,
+          avatarUrl: overrideAvatarUrl,
+        }
+      : undefined
+
+  const hasClickable = Boolean(tags.clickable || tags.opens || tags.auto)
+  const notificationClickable = type === "notification" && hasClickable ? true : undefined
+
+  let notificationOpenDelayMs: number | undefined
+  if (type === "notification" && hasClickable) {
+    const seconds = typeof tags.opens === "string" ? Number(tags.opens) : NaN
+    notificationOpenDelayMs =
+      !Number.isNaN(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : DEFAULT_NOTIFICATION_OPEN_DELAY_MS
+  }
+
+  let notificationAutoOpen: boolean | undefined
+  let notificationAutoOpenDelayMs: number | undefined
+  if (type === "notification" && tags.auto) {
+    notificationAutoOpen = true
+    const seconds = typeof tags.auto === "string" ? Number(tags.auto) : NaN
+    notificationAutoOpenDelayMs =
+      !Number.isNaN(seconds) && seconds >= 0
+        ? Math.round(seconds * 1000)
+        : DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS
+  }
+
+  return {
+    type,
+    status,
+    delayMs,
+    isHidden,
+    imageUrl,
+    notificationOverride,
+    notificationClickable,
+    notificationOpenDelayMs,
+    notificationAutoOpen,
+    notificationAutoOpenDelayMs,
+  }
+}
+
+/** The inverse of fieldsFromEasyTags - only emits tags for values that differ from the defaults. */
+const easyTagsFromMessage = (message: Message): string => {
+  const tags: string[] = []
+  if (message.type === "notification") tags.push("notification")
+  else if (message.type === "system") tags.push("system")
+  else if (message.type === "image") {
+    tags.push(`image=${quoteTagValue(message.imageUrl ?? "")}`)
+  }
+
+  const delayMs = message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS
+  if (delayMs !== DEFAULT_MESSAGE_DELAY_MS) {
+    tags.push(`delay=${delayMs / 1000}`)
+  }
+  if (message.status !== "sent") tags.push(`status=${message.status}`)
+  if (message.isHidden) tags.push("hidden")
+
+  if (message.type === "notification") {
+    if (message.notificationClickable) tags.push("clickable")
+    if (message.notificationClickable) {
+      const opensMs = message.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS
+      if (opensMs !== DEFAULT_NOTIFICATION_OPEN_DELAY_MS) tags.push(`opens=${opensMs / 1000}`)
+    }
+    if (message.notificationAutoOpen) {
+      const autoMs = message.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS
+      tags.push(`auto=${autoMs / 1000}`)
+    }
+    if (message.notificationOverride?.enabled) {
+      if (message.notificationOverride.senderName) {
+        tags.push(`as=${quoteTagValue(message.notificationOverride.senderName)}`)
+      }
+      if (message.notificationOverride.appName) {
+        tags.push(`app=${quoteTagValue(message.notificationOverride.appName)}`)
+      }
+      if (message.notificationOverride.avatarUrl) {
+        tags.push(`avatar=${quoteTagValue(message.notificationOverride.avatarUrl)}`)
+      }
+    }
+  }
+
+  return tags.length ? `[${tags.join(" ")}]` : ""
+}
+
 const MessageRow = ({
   message,
   onEdit,
   onDelete,
   isActionsOpen,
   onToggleActions,
+  t,
 }: {
   message: Message
   onEdit: () => void
@@ -58,6 +232,7 @@ const MessageRow = ({
   onToggleVisibility: () => void
   isActionsOpen: boolean
   onToggleActions: () => void
+  t: TranslationTree
 }) => {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({
     id: message.id,
@@ -106,7 +281,7 @@ const MessageRow = ({
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="icon" onClick={onEdit}>
           <Pencil className="h-4 w-4" />
-          <span className="sr-only">Edit</span>
+          <span className="sr-only">{t.builder.edit}</span>
         </Button>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -114,7 +289,7 @@ const MessageRow = ({
               <Trash2 className="h-4 w-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Delete</TooltipContent>
+          <TooltipContent>{t.builder.delete}</TooltipContent>
         </Tooltip>
         <Button
           variant="ghost"
@@ -123,7 +298,7 @@ const MessageRow = ({
           onClick={onToggleActions}
         >
           <MoreHorizontal className="h-4 w-4" />
-          <span className="sr-only">More actions</span>
+          <span className="sr-only">{t.builder.moreActions}</span>
         </Button>
       </div>
     </div>
@@ -131,14 +306,27 @@ const MessageRow = ({
 }
 
 export const ConversationBuilder = () => {
+  const { t } = useTranslation()
   const messages = useConversationStore((state) => state.conversation.messages)
   const participants = useConversationStore((state) => state.conversation.participants)
+  const memberIds = useConversationStore((state) => state.conversation.memberIds)
   const activeParticipantId = useConversationStore((state) => state.activeParticipantId)
   const addMessage = useConversationStore((state) => state.addMessage)
+  const addParticipant = useConversationStore((state) => state.addParticipant)
+  const ensureConversationMember = useConversationStore((state) => state.ensureConversationMember)
   const updateMessage = useConversationStore((state) => state.updateMessage)
   const deleteMessage = useConversationStore((state) => state.deleteMessage)
   const duplicateMessage = useConversationStore((state) => state.duplicateMessage)
   const setMessages = useConversationStore((state) => state.setMessages)
+
+  // Who's actually chatting in this conversation right now, as opposed to
+  // the full character roster - the sender dropdown should only offer
+  // these, so a benched character never accidentally ends up talking here.
+  const chatMembers = useMemo(() => {
+    const ids = memberIds && memberIds.length ? memberIds : participants.map((participant) => participant.id)
+    const members = participants.filter((participant) => ids.includes(participant.id))
+    return members.length ? members : participants
+  }, [participants, memberIds])
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [openActionsId, setOpenActionsId] = useState<string | null>(null)
@@ -195,9 +383,9 @@ export const ConversationBuilder = () => {
   }
 
   const resolveReceiverId = () => {
-    const fallback = participants[0]?.id ?? ""
+    const fallback = chatMembers[0]?.id ?? ""
     if (!activeParticipantId) return fallback
-    return participants.find((participant) => participant.id !== activeParticipantId)?.id ?? fallback
+    return chatMembers.find((participant) => participant.id !== activeParticipantId)?.id ?? fallback
   }
 
   const showToast = (message: string, tone: "success" | "error" = "success") => {
@@ -223,8 +411,15 @@ export const ConversationBuilder = () => {
   const buildEasyText = () =>
     messages
       .map((message) => {
-        const marker = message.senderId === activeParticipantId ? "<" : ">"
-        return `${marker} ${message.content}`
+        let marker: string
+        if (message.senderId === activeParticipantId) marker = "<"
+        else if (message.senderId === resolveReceiverId()) marker = ">"
+        else {
+          const participant = participants.find((candidate) => candidate.id === message.senderId)
+          marker = participant ? `${participant.name}:` : ">"
+        }
+        const tagsStr = easyTagsFromMessage(message)
+        return [marker, message.content, tagsStr].filter((part) => part !== "").join(" ")
       })
       .join("\n")
 
@@ -239,64 +434,146 @@ export const ConversationBuilder = () => {
   }
 
   const handleEasyApply = () => {
+    if (!activeParticipantId) {
+      setEasyError(t.builder.easyModeAtLeastOneParticipant)
+      showToast(t.builder.easyModeAtLeastOneParticipant, "error")
+      return
+    }
     const receiverId = resolveReceiverId()
-    if (!activeParticipantId || !receiverId) {
-      setEasyError("Add at least two participants to use easy mode.")
-      showToast("Add at least two participants to use easy mode.", "error")
+
+    type RawEntry = { marker: string; textParts: string[]; tags: EasyTags }
+    const rawEntries: RawEntry[] = []
+    let hadContinuationWithoutEntry = false
+
+    easyInput.split("\n").forEach((rawLine) => {
+      const trimmed = rawLine.trim()
+      if (!trimmed) return
+
+      let marker: string | null = null
+      let rest = ""
+      if (trimmed[0] === "<" || trimmed[0] === ">") {
+        marker = trimmed[0]
+        rest = trimmed.slice(1).trim()
+      } else {
+        const namedMatch = trimmed.match(NAMED_LINE_REGEX)
+        if (namedMatch) {
+          marker = namedMatch[1].trim()
+          rest = namedMatch[2]
+        }
+      }
+
+      const { text, tagBlock } = splitTrailingTagBlock(marker === null ? trimmed : rest)
+      const tags = tagBlock !== null ? parseEasyTags(tagBlock) : {}
+
+      if (marker !== null) {
+        rawEntries.push({ marker, textParts: text ? [text] : [], tags })
+        return
+      }
+
+      if (rawEntries.length === 0) {
+        hadContinuationWithoutEntry = true
+        return
+      }
+      const last = rawEntries[rawEntries.length - 1]
+      if (text) last.textParts.push(text)
+      Object.assign(last.tags, tags)
+    })
+
+    if (hadContinuationWithoutEntry || rawEntries.length === 0) {
+      setEasyError(t.builder.easyModeStartLine)
+      showToast(t.builder.easyModeStartLine, "error")
       return
     }
 
-    const lines = easyInput.split("\n")
-    const entries: Array<{ senderId: string; content: string }> = []
-    let hasInvalidLine = false
-
-    lines.forEach((line) => {
-      const trimmed = line.trim()
-      if (!trimmed) return
-      const marker = trimmed[0]
-      if (marker !== "<" && marker !== ">") {
-        if (entries.length) {
-          entries[entries.length - 1].content += `\n${trimmed}`
-        } else {
-          hasInvalidLine = true
-        }
-        return
-      }
-      const content = trimmed.slice(1).trim()
-      if (!content) return
-      const senderId = marker === "<" ? activeParticipantId : receiverId
-      entries.push({ senderId, content })
+    // Auto-create a participant for any name that isn't already one of ours.
+    const nameToId = new Map<string, string>()
+    participants.forEach((participant) => nameToId.set(participant.name.trim().toLowerCase(), participant.id))
+    rawEntries.forEach((entry) => {
+      if (entry.marker === "<" || entry.marker === ">") return
+      const key = entry.marker.toLowerCase()
+      if (nameToId.has(key)) return
+      addParticipant({
+        name: entry.marker,
+        status: "online",
+        color: pickEasyModeParticipantColor(nameToId.size),
+      })
+      const created = useConversationStore.getState().conversation.participants.at(-1)
+      if (created) nameToId.set(key, created.id)
+    })
+    // Everyone the script actually gives a line to is chatting in this main
+    // conversation, whether they were just created or already existed as a
+    // benched roster character. (nameToId also holds every OTHER roster
+    // participant for lookup purposes, so only touch the ones this script
+    // actually used.)
+    const usedKeys = new Set(
+      rawEntries
+        .filter((entry) => entry.marker !== "<" && entry.marker !== ">")
+        .map((entry) => entry.marker.toLowerCase()),
+    )
+    usedKeys.forEach((key) => {
+      const participantId = nameToId.get(key)
+      if (participantId) ensureConversationMember(participantId)
     })
 
-    if (hasInvalidLine || entries.length === 0) {
-      setEasyError("Use < or > at the start of each message line.")
-      showToast("Use < or > at the start of each message line.", "error")
+    let hadMissingReceiver = false
+    const finalEntries: Array<{ senderId: string; content: string } & EasyMessageFields> = []
+
+    rawEntries.forEach((entry) => {
+      let senderId: string | undefined
+      if (entry.marker === "<") senderId = activeParticipantId
+      else if (entry.marker === ">") {
+        if (!receiverId) {
+          hadMissingReceiver = true
+          return
+        }
+        senderId = receiverId
+      } else {
+        senderId = nameToId.get(entry.marker.toLowerCase())
+      }
+      if (!senderId) return
+
+      const fields = fieldsFromEasyTags(entry.tags)
+      const content = entry.textParts.filter(Boolean).join("\n")
+      if (!content && fields.type !== "image") return
+
+      finalEntries.push({ senderId, content, ...fields })
+    })
+
+    if (hadMissingReceiver) {
+      setEasyError(t.builder.easyModeNeedReceiver)
+      showToast(t.builder.easyModeNeedReceiver, "error")
+      return
+    }
+    if (finalEntries.length === 0) {
+      setEasyError(t.builder.easyModeNothingToApply)
+      showToast(t.builder.easyModeNothingToApply, "error")
       return
     }
 
     const now = Date.now()
-    const nextMessages = entries.map((entry, index) => {
+    const nextMessages: Message[] = finalEntries.map((entry, index) => {
       const existing = messages[index]
-      if (existing) {
-        return {
-          ...existing,
-          senderId: entry.senderId,
-          content: entry.content,
-        }
-      }
       return {
-        id: generateId(),
+        id: existing?.id ?? generateId(),
+        timestamp: existing?.timestamp ?? new Date(now + index * 1000).toISOString(),
         senderId: entry.senderId,
         content: entry.content,
-        timestamp: new Date(now + index * 1000).toISOString(),
-        type: "text" as const,
-        status: "sent" as const,
+        imageUrl: entry.imageUrl,
+        type: entry.type,
+        status: entry.status,
+        delayMs: entry.delayMs,
+        isHidden: entry.isHidden,
+        notificationOverride: entry.notificationOverride,
+        notificationClickable: entry.notificationClickable,
+        notificationOpenDelayMs: entry.notificationOpenDelayMs,
+        notificationAutoOpen: entry.notificationAutoOpen,
+        notificationAutoOpenDelayMs: entry.notificationAutoOpenDelayMs,
       }
     })
 
     setMessages(nextMessages)
     setEasyError(null)
-    showToast("Easy changes applied.")
+    showToast(t.builder.easyModeApplied)
   }
 
   const hasHidden = messages.some((message) => message.isHidden)
@@ -310,19 +587,19 @@ export const ConversationBuilder = () => {
     <TooltipProvider>
       <div className="space-y-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900">Conversation Builder</h3>
+          <h3 className="text-sm font-semibold text-slate-900">{t.builder.title}</h3>
           <p className="text-xs text-slate-500">
-            Add messages, drag to reorder, or switch to Easy mode for bulk edits.
+            {t.builder.subtitle}
           </p>
         </div>
 
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Messages</h4>
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{t.builder.messagesLabel}</h4>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-slate-500">{messages.length} total</span>
+              <span className="text-xs text-slate-500">{messages.length} {t.builder.total}</span>
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
-                <Label className="text-[10px] uppercase text-slate-400">Global date</Label>
+                <Label className="text-[10px] uppercase text-slate-400">{t.builder.globalDate}</Label>
                 <Input
                   type="date"
                   value={globalDate}
@@ -331,7 +608,7 @@ export const ConversationBuilder = () => {
                   disabled={messages.length === 0}
                 />
                 <span className="text-xs text-slate-400">
-                  {hasMixedDates ? "Mixed dates" : "Keeps time-of-day"}
+                  {hasMixedDates ? t.builder.mixedDates : t.builder.keepsTimeOfDay}
                 </span>
               </div>
               <Button
@@ -343,7 +620,7 @@ export const ConversationBuilder = () => {
                 }
                 disabled={!hasVisible}
               >
-                Hide all
+                {t.builder.hideAll}
               </Button>
               <Button
                 type="button"
@@ -354,14 +631,14 @@ export const ConversationBuilder = () => {
                 }
                 disabled={!hasHidden}
               >
-                Show all
+                {t.builder.showAll}
               </Button>
             </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2">
             <div className="space-y-1">
-              <div className="text-xs font-semibold uppercase text-slate-400">Editor view</div>
-              <p className="text-xs text-slate-500">Switch between the list and easy text editor.</p>
+              <div className="text-xs font-semibold uppercase text-slate-400">{t.builder.editorView}</div>
+              <p className="text-xs text-slate-500">{t.builder.editorViewDescription}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Button
@@ -370,7 +647,7 @@ export const ConversationBuilder = () => {
                 variant={viewMode === "standard" ? "default" : "outline"}
                 onClick={() => handleViewModeChange("standard")}
               >
-                Standard
+                {t.builder.standard}
               </Button>
               <Button
                 type="button"
@@ -378,21 +655,21 @@ export const ConversationBuilder = () => {
                 variant={viewMode === "easy" ? "default" : "outline"}
                 onClick={() => handleViewModeChange("easy")}
               >
-                Easy
+                {t.builder.easy}
               </Button>
             </div>
           </div>
           {viewMode === "easy" ? (
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <Label className="text-xs uppercase text-slate-400">Easy editor</Label>
+                <Label className="text-xs uppercase text-slate-400">{t.builder.easyEditor}</Label>
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
                   onClick={() => setEasyInput(buildEasyText())}
                 >
-                  Refresh
+                  {t.builder.refresh}
                 </Button>
               </div>
               <div className="mt-3 space-y-2">
@@ -402,14 +679,36 @@ export const ConversationBuilder = () => {
                     setEasyInput(event.target.value)
                     if (easyError) setEasyError(null)
                   }}
-                  placeholder={`< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message`}
-                  className="min-h-[280px] resize-y"
+                  placeholder={`< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram]`}
+                  className="min-h-[280px] resize-y font-mono"
                 />
-                <p className="text-xs text-slate-500">
-                  <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "Sender"},{" "}
-                  <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Receiver"}.
-                  New lines become new messages, timestamps default to now.
-                </p>
+                <div className="space-y-1 text-xs text-slate-500">
+                  <p>
+                    <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "Sender"},{" "}
+                    <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Receiver"},{" "}
+                    <span className="font-semibold">Name:</span>{t.builder.easyHelpNameNote}
+                  </p>
+                  <p>
+                    {t.builder.easyHelpTagsIntro}{" "}
+                    <span className="font-mono font-semibold">[brackets]</span>{t.builder.easyHelpTagsBody}
+                    <span className="font-mono">notification</span> /{" "}
+                    <span className="font-mono">system</span> /{" "}
+                    <span className="font-mono">image=url</span>; delivery -{" "}
+                    <span className="font-mono">delay=2</span> (seconds),{" "}
+                    <span className="font-mono">status=read</span>,{" "}
+                    <span className="font-mono">hidden</span>; and for notifications -{" "}
+                    <span className="font-mono">clickable</span>,{" "}
+                    <span className="font-mono">opens=0.7</span> (seconds to open after tap),{" "}
+                    <span className="font-mono">auto=1.5</span> (auto-taps itself after this many
+                    seconds, no click needed),{" "}
+                    <span className="font-mono">as="Name"</span>,{" "}
+                    <span className="font-mono">app="App"</span>,{" "}
+                    <span className="font-mono">avatar=url</span>. Example:{" "}
+                    <span className="font-mono">
+                      &gt; New message [notification clickable auto=1.5 as="Sarah"]
+                    </span>
+                  </p>
+                </div>
                 {easyError ? (
                   <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
                     {easyError}
@@ -418,7 +717,7 @@ export const ConversationBuilder = () => {
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <Button type="button" onClick={handleEasyApply}>
-                  Apply changes
+                  {t.builder.applyChanges}
                 </Button>
                 <Button
                   type="button"
@@ -428,7 +727,7 @@ export const ConversationBuilder = () => {
                     setEasyError(null)
                   }}
                 >
-                  Clear
+                  {t.builder.clear}
                 </Button>
               </div>
             </div>
@@ -436,7 +735,7 @@ export const ConversationBuilder = () => {
             <>
               {messages.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-xs text-slate-500">
-                  No messages yet. Add the first entry above.
+                  {t.builder.noMessagesYet}
                 </div>
               ) : null}
               <DndContext
@@ -464,6 +763,7 @@ export const ConversationBuilder = () => {
                         <div key={message.id} className="space-y-2">
                           <MessageRow
                             message={message}
+                            t={t}
                             onEdit={() => {
                               setEditingId(message.id)
                               setIsAdvancedOpen(false)
@@ -495,7 +795,7 @@ export const ConversationBuilder = () => {
                                   disabled={!canMoveUp}
                                 >
                                   <ArrowUp className="h-4 w-4" />
-                                  <span className="sr-only">Move up</span>
+                                  <span className="sr-only">{t.builder.moveUp}</span>
                                 </Button>
                                 <Button
                                   variant="ghost"
@@ -504,7 +804,7 @@ export const ConversationBuilder = () => {
                                   disabled={!canMoveDown}
                                 >
                                   <ArrowDown className="h-4 w-4" />
-                                  <span className="sr-only">Move down</span>
+                                  <span className="sr-only">{t.builder.moveDown}</span>
                                 </Button>
                               </div>
                               <Button
@@ -516,7 +816,7 @@ export const ConversationBuilder = () => {
                                 }}
                               >
                                 {message.isHidden ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                                {message.isHidden ? "Show in chat" : "Hide from chat"}
+                                {message.isHidden ? t.builder.showInChat : t.builder.hideFromChat}
                               </Button>
                               <Button
                                 variant="ghost"
@@ -527,7 +827,7 @@ export const ConversationBuilder = () => {
                                 }}
                               >
                                 <Copy className="h-4 w-4" />
-                                Duplicate
+                                {t.builder.duplicate}
                               </Button>
                               <Button
                                 variant="ghost"
@@ -539,7 +839,7 @@ export const ConversationBuilder = () => {
                                 }}
                               >
                                 <Trash2 className="h-4 w-4" />
-                                Delete
+                                {t.builder.delete}
                               </Button>
                             </div>
                           ) : null}
@@ -547,7 +847,8 @@ export const ConversationBuilder = () => {
                             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                               <MessageForm
                                 key={message.id}
-                                participants={participants}
+                                participants={chatMembers}
+                                rosterParticipants={participants}
                                 initial={message}
                                 defaultSenderId={activeParticipantId}
                                 compact
@@ -558,7 +859,7 @@ export const ConversationBuilder = () => {
                                   setEditingId(null)
                                 }}
                                 onCancel={() => setEditingId(null)}
-                                submitLabel="Save changes"
+                                submitLabel={t.messageForm.saveChanges}
                               />
                             </div>
                           ) : null}
@@ -579,7 +880,8 @@ export const ConversationBuilder = () => {
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                   <MessageForm
                     key="new"
-                    participants={participants}
+                    participants={chatMembers}
+                    rosterParticipants={participants}
                     initial={null}
                     defaultSenderId={activeParticipantId}
                     compact
@@ -587,7 +889,7 @@ export const ConversationBuilder = () => {
                     onSubmit={(payload) => {
                       addMessage(payload)
                     }}
-                    submitLabel="Add message"
+                    submitLabel={t.messageForm.addMessage}
                   />
                 </div>
               ) : null}
@@ -597,7 +899,7 @@ export const ConversationBuilder = () => {
                 variant={isAddOpen ? "outline" : "default"}
                 onClick={() => setIsAddOpen((prev) => !prev)}
               >
-                {isAddOpen ? "Hide add message" : "Add message"}
+                {isAddOpen ? t.builder.hideAddMessage : t.messageForm.addMessage}
               </Button>
             </div>
           </>

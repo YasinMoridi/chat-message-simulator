@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { LinkedConversationEditor } from "@/components/editor/LinkedConversationEditor"
 import type { Message } from "@/types/message"
 import {
   DEFAULT_MESSAGE_DELAY_MS,
@@ -15,10 +16,19 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/utils/cn"
 import { readFileAsDataUrl } from "@/utils/helpers"
+import { useTranslation } from "@/i18n/useTranslation"
 import { Clipboard, ImagePlus, X } from "lucide-react"
 
 interface MessageFormProps {
   participants: Participant[]
+  /**
+   * Full character roster to offer as a notification's linked-chat target -
+   * falls back to `participants` when omitted. Kept separate from
+   * `participants` because the sender list for THIS conversation may be
+   * narrower (only its actual members) than the whole roster you can still
+   * link a notification to.
+   */
+  rosterParticipants?: Participant[]
   initial?: Message | null
   defaultSenderId?: string
   compact?: boolean
@@ -26,6 +36,12 @@ interface MessageFormProps {
   submitLabel?: string
   advancedOpen?: boolean
   onToggleAdvanced?: () => void
+  /**
+   * True when this form is editing a message that lives inside a
+   * notification's linked side-chat (not the main conversation). Swaps the
+   * notification-authoring block for a single "return to main chat" toggle.
+   */
+  isSubMessage?: boolean
   onSubmit: (payload: {
     senderId: string
     content: string
@@ -39,6 +55,8 @@ interface MessageFormProps {
     notificationOpenDelayMs?: number
     notificationAutoOpen?: boolean
     notificationAutoOpenDelayMs?: number
+    linkedParticipantId?: string
+    returnToParent?: boolean
   }) => void
   onCancel?: () => void
 }
@@ -65,6 +83,7 @@ const fromInputValue = (value: string) => new Date(value).toISOString()
 
 export const MessageForm = ({
   participants,
+  rosterParticipants,
   initial,
   defaultSenderId,
   compact,
@@ -72,9 +91,11 @@ export const MessageForm = ({
   submitLabel,
   advancedOpen,
   onToggleAdvanced,
+  isSubMessage = false,
   onSubmit,
   onCancel,
 }: MessageFormProps) => {
+  const { t } = useTranslation()
   const [content, setContent] = useState(initial?.content ?? "")
   const [senderId, setSenderId] = useState(
     initial?.senderId ?? resolveSenderId(defaultSenderId, participants),
@@ -120,6 +141,8 @@ export const MessageForm = ({
   const [notificationAutoOpenDelaySeconds, setNotificationAutoOpenDelaySeconds] = useState(
     (initial?.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS) / 1000,
   )
+  const [linkedParticipantId, setLinkedParticipantId] = useState(initial?.linkedParticipantId ?? "")
+  const [returnToParent, setReturnToParent] = useState(initial?.returnToParent ?? false)
   const showAdvanced = advancedOpen ?? true
   const showAdvancedToggle = typeof advancedOpen === "boolean" && typeof onToggleAdvanced === "function"
   const previousDefaultRef = useRef(defaultSenderId)
@@ -127,6 +150,7 @@ export const MessageForm = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const setDraftMessage = useConversationStore((state) => state.setDraftMessage)
   const addParticipant = useConversationStore((state) => state.addParticipant)
+  const ensureConversationMember = useConversationStore((state) => state.ensureConversationMember)
   const notificationSenderNames = useConversationStore((state) => state.notificationSenderNames)
   const addNotificationSenderName = useConversationStore((state) => state.addNotificationSenderName)
 
@@ -215,11 +239,11 @@ export const MessageForm = ({
 
   const handleImageUpload = async (file: File) => {
     if (!file.type.startsWith("image/")) {
-      setImageError("Only image files are allowed.")
+      setImageError(t.messageForm.onlyImageFiles)
       return
     }
     if (file.size > 5 * 1024 * 1024) {
-      setImageError("Image must be smaller than 5MB.")
+      setImageError(t.messageForm.imageTooLarge5mb)
       return
     }
     try {
@@ -228,7 +252,7 @@ export const MessageForm = ({
       setImageError(null)
     } catch (error) {
       console.error("Failed to read image file", error)
-      setImageError("Could not read the selected image.")
+      setImageError(t.messageForm.couldNotReadImage)
     }
   }
 
@@ -238,14 +262,18 @@ export const MessageForm = ({
       onSubmit={(event) => {
         event.preventDefault()
         if (type === "image" && !imageUrl) {
-          setImageError("Please upload an image for this message.")
+          setImageError(t.messageForm.pleaseUploadImage)
           return
         }
         if (type === "notification" && notificationOverrideEnabled && notificationSenderName.trim()) {
           addNotificationSenderName(notificationSenderName)
         }
         const trimmedSenderName = senderNameInput.trim()
-        const matchedParticipant = participants.find(
+        // Match against the full roster (when known), not just the
+        // narrower list this form offers as senders - otherwise typing an
+        // existing-but-benched character's name would create a duplicate.
+        const roster = rosterParticipants ?? participants
+        const matchedParticipant = roster.find(
           (participant) => participant.name.trim().toLowerCase() === trimmedSenderName.toLowerCase(),
         )
         let finalSenderId = matchedParticipant?.id ?? senderId
@@ -253,10 +281,17 @@ export const MessageForm = ({
           addParticipant({
             name: trimmedSenderName,
             status: "online",
-            color: pickNewParticipantColor(participants.length),
+            color: pickNewParticipantColor(roster.length),
           })
           const created = useConversationStore.getState().conversation.participants.at(-1)
           if (created) finalSenderId = created.id
+        }
+        // rosterParticipants is only passed for the main conversation's
+        // forms - a character who's about to speak here should count as a
+        // member, whether they were just created or already existed but
+        // were benched.
+        if (rosterParticipants && finalSenderId) {
+          ensureConversationMember(finalSenderId)
         }
         onSubmit({
           senderId: finalSenderId,
@@ -286,6 +321,11 @@ export const MessageForm = ({
             type === "notification" && notificationClickable && notificationAutoOpen
               ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
               : undefined,
+          linkedParticipantId:
+            type === "notification" && notificationClickable
+              ? linkedParticipantId || undefined
+              : undefined,
+          returnToParent: isSubMessage ? returnToParent : undefined,
         })
         if (resetOnSubmit && !initial) {
           setContent("")
@@ -304,21 +344,23 @@ export const MessageForm = ({
           setNotificationOpenDelaySeconds(DEFAULT_NOTIFICATION_OPEN_DELAY_MS / 1000)
           setNotificationAutoOpen(false)
           setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
+          setLinkedParticipantId("")
+          setReturnToParent(false)
         }
       }}
     >
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Label>{type === "image" ? "Caption" : "Message"}</Label>
+          <Label>{type === "image" ? t.messageForm.caption : t.messageForm.message}</Label>
           <div className="flex items-center gap-2">
             <Button type="button" size="sm" variant="ghost" onClick={handlePaste}>
               <Clipboard className="h-3.5 w-3.5" />
-              Paste
+              {t.messageForm.paste}
             </Button>
             {content ? (
               <Button type="button" size="sm" variant="ghost" onClick={() => setContent("")}>
                 <X className="h-3.5 w-3.5" />
-                Clear
+                {t.messageForm.clear}
               </Button>
             ) : null}
           </div>
@@ -327,21 +369,21 @@ export const MessageForm = ({
           ref={textareaRef}
           value={content}
           onChange={(event) => setContent(event.target.value)}
-          placeholder={type === "image" ? "Add a caption (optional)..." : "Write the message..."}
+          placeholder={type === "image" ? t.messageForm.captionPlaceholder : t.messageForm.messagePlaceholder}
           className={cn(compact && "min-h-[72px]")}
         />
       </div>
 
       {type === "image" ? (
         <div className="space-y-2">
-          <Label>Image upload</Label>
+          <Label>{t.messageForm.imageUpload}</Label>
           <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
             <div className="h-20 w-28 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
               {imageUrl ? (
                 <img src={imageUrl} alt="Uploaded preview" className="h-full w-full object-cover" />
               ) : (
                 <div className="flex h-full items-center justify-center text-xs text-slate-400">
-                  No image
+                  {t.messageForm.noImage}
                 </div>
               )}
             </div>
@@ -354,7 +396,7 @@ export const MessageForm = ({
                 className="gap-2"
               >
                 <ImagePlus className="h-4 w-4" />
-                Upload image
+                {t.messageForm.uploadImage}
               </Button>
               {imageUrl ? (
                 <Button type="button" variant="ghost" size="sm" onClick={() => setImageUrl("")}>
@@ -388,7 +430,7 @@ export const MessageForm = ({
         <>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label>Sender</Label>
+              <Label>{t.messageForm.sender}</Label>
               <Input
                 list="message-sender-name-options"
                 value={senderNameInput}
@@ -400,7 +442,7 @@ export const MessageForm = ({
                   )
                   if (match) setSenderId(match.id)
                 }}
-                placeholder="Pick or type a name"
+                placeholder={t.messageForm.senderPlaceholder}
               />
               <datalist id="message-sender-name-options">
                 {participants.map((participant) => (
@@ -408,12 +450,11 @@ export const MessageForm = ({
                 ))}
               </datalist>
               <p className="text-[11px] text-slate-500">
-                Pick an existing participant, or type a new name - it's added as a participant
-                when you submit.
+                {t.messageForm.senderHint}
               </p>
             </div>
             <div className="space-y-2">
-              <Label>Timestamp</Label>
+              <Label>{t.messageForm.timestamp}</Label>
               <Input
                 type="datetime-local"
                 value={timestamp}
@@ -424,7 +465,7 @@ export const MessageForm = ({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label>Type</Label>
+              <Label>{t.messageForm.type}</Label>
               <Select
                 value={type}
                 onValueChange={(value) => {
@@ -436,32 +477,31 @@ export const MessageForm = ({
                 }}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select type" />
+                  <SelectValue placeholder={t.messageForm.selectType} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="text">Text</SelectItem>
-                  <SelectItem value="system">System</SelectItem>
-                  <SelectItem value="image">Image</SelectItem>
-                  <SelectItem value="notification">Notification</SelectItem>
+                  <SelectItem value="text">{t.messageForm.typeText}</SelectItem>
+                  <SelectItem value="system">{t.messageForm.typeSystem}</SelectItem>
+                  <SelectItem value="image">{t.messageForm.typeImage}</SelectItem>
+                  <SelectItem value="notification">{t.messageForm.typeNotification}</SelectItem>
                 </SelectContent>
               </Select>
               {type === "notification" ? (
                 <p className="text-[11px] text-slate-500">
-                  Pops in as an OS notification banner at this point in playback - it never
-                  appears as a bubble in the chat itself.
+                  {t.messageForm.notificationTypeHint}
                 </p>
               ) : null}
             </div>
             <div className="space-y-2">
-              <Label>Status</Label>
+              <Label>{t.messageForm.status}</Label>
               <Select value={status} onValueChange={(value) => setStatus(value as Message["status"])}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
+                  <SelectValue placeholder={t.messageForm.selectStatus} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="sent">Sent</SelectItem>
-                  <SelectItem value="delivered">Delivered</SelectItem>
-                  <SelectItem value="read">Read</SelectItem>
+                  <SelectItem value="sent">{t.messageForm.statusSent}</SelectItem>
+                  <SelectItem value="delivered">{t.messageForm.statusDelivered}</SelectItem>
+                  <SelectItem value="read">{t.messageForm.statusRead}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -469,7 +509,7 @@ export const MessageForm = ({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label>Reveal delay (seconds)</Label>
+              <Label>{t.messageForm.revealDelay}</Label>
               <Input
                 type="number"
                 min={0}
@@ -478,19 +518,28 @@ export const MessageForm = ({
                 onChange={(event) => setDelaySeconds(Number(event.target.value))}
               />
               <p className="text-[11px] text-slate-500">
-                Time this waits after the previous entry before it appears during playback.
+                {t.messageForm.revealDelayHint}
               </p>
             </div>
           </div>
+
+          {isSubMessage ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
+              <div className="space-y-0.5">
+                <Label>{t.messageForm.returnToParent}</Label>
+                <p className="text-[11px] text-slate-500">{t.messageForm.returnToParentHint}</p>
+              </div>
+              <Switch checked={returnToParent} onCheckedChange={setReturnToParent} />
+            </div>
+          ) : null}
 
           {type === "notification" ? (
             <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="space-y-0.5">
-                  <Label>Show as a different name/app</Label>
+                  <Label>{t.messageForm.showDifferentNameApp}</Label>
                   <p className="text-[11px] text-slate-500">
-                    By default the notification uses the Sender above. Turn this on to display a
-                    different name, app, or avatar instead.
+                    {t.messageForm.showDifferentNameAppHint}
                   </p>
                 </div>
                 <Switch
@@ -501,12 +550,12 @@ export const MessageForm = ({
               {notificationOverrideEnabled ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>Notification sender name</Label>
+                    <Label>{t.messageForm.notificationSenderName}</Label>
                     <Input
                       list="notification-sender-name-options"
                       value={notificationSenderName}
                       onChange={(event) => setNotificationSenderName(event.target.value)}
-                      placeholder="e.g. Sarah"
+                      placeholder={t.messageForm.notificationSenderNamePlaceholder}
                     />
                     <datalist id="notification-sender-name-options">
                       {notificationSenderNames.map((name) => (
@@ -514,20 +563,19 @@ export const MessageForm = ({
                       ))}
                     </datalist>
                     <p className="text-[11px] text-slate-500">
-                      Pick a name you've used before, or just type a new one - it's added to the
-                      list.
+                      {t.messageForm.notificationSenderNameHint}
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <Label>Notification app name</Label>
+                    <Label>{t.messageForm.notificationAppName}</Label>
                     <Input
                       value={notificationAppName}
                       onChange={(event) => setNotificationAppName(event.target.value)}
-                      placeholder="e.g. Instagram"
+                      placeholder={t.messageForm.notificationAppNamePlaceholder}
                     />
                   </div>
                   <div className="space-y-2 sm:col-span-2">
-                    <Label>Notification avatar URL (optional)</Label>
+                    <Label>{t.messageForm.notificationAvatarUrl}</Label>
                     <Input
                       value={notificationAvatarUrl}
                       onChange={(event) => setNotificationAvatarUrl(event.target.value)}
@@ -538,17 +586,16 @@ export const MessageForm = ({
               ) : null}
               <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
                 <div className="space-y-0.5">
-                  <Label>Clickable (opens the chat)</Label>
+                  <Label>{t.messageForm.clickable}</Label>
                   <p className="text-[11px] text-slate-500">
-                    Let this banner be tapped during live playback, like a real notification that
-                    opens the app when you tap it.
+                    {t.messageForm.clickableHint}
                   </p>
                 </div>
                 <Switch checked={notificationClickable} onCheckedChange={setNotificationClickable} />
               </div>
               {notificationClickable ? (
                 <div className="space-y-2">
-                  <Label>Opens after (seconds)</Label>
+                  <Label>{t.messageForm.opensAfter}</Label>
                   <Input
                     type="number"
                     min={0}
@@ -557,7 +604,7 @@ export const MessageForm = ({
                     onChange={(event) => setNotificationOpenDelaySeconds(Number(event.target.value))}
                   />
                   <p className="text-[11px] text-slate-500">
-                    How long it waits after being tapped before it opens into the full chat.
+                    {t.messageForm.opensAfterHint}
                   </p>
                 </div>
               ) : null}
@@ -565,18 +612,16 @@ export const MessageForm = ({
                 <div className="space-y-3 border-t border-slate-100 pt-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="space-y-0.5">
-                      <Label>Auto-open (no tap needed)</Label>
+                      <Label>{t.messageForm.autoOpen}</Label>
                       <p className="text-[11px] text-slate-500">
-                        Instead of waiting for someone to actually click the banner, it taps
-                        itself during playback - useful when you're directing the timing rather
-                        than clicking live.
+                        {t.messageForm.autoOpenHint}
                       </p>
                     </div>
                     <Switch checked={notificationAutoOpen} onCheckedChange={setNotificationAutoOpen} />
                   </div>
                   {notificationAutoOpen ? (
                     <div className="space-y-2">
-                      <Label>Auto-taps after (seconds)</Label>
+                      <Label>{t.messageForm.autoTapsAfter}</Label>
                       <Input
                         type="number"
                         min={0}
@@ -587,9 +632,38 @@ export const MessageForm = ({
                         }
                       />
                       <p className="text-[11px] text-slate-500">
-                        How long the banner sits there after appearing before it taps itself.
+                        {t.messageForm.autoTapsAfterHint}
                       </p>
                     </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {notificationClickable && !isSubMessage ? (
+                <div className="space-y-3 border-t border-slate-100 pt-3">
+                  <div className="space-y-2">
+                    <Label>{t.messageForm.linkedConversation}</Label>
+                    <Select
+                      value={linkedParticipantId || "__none__"}
+                      onValueChange={(value) => setLinkedParticipantId(value === "__none__" ? "" : value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={t.messageForm.linkedConversationNone} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">{t.messageForm.linkedConversationNone}</SelectItem>
+                        {(rosterParticipants ?? participants).map((participant) => (
+                          <SelectItem key={participant.id} value={participant.id}>
+                            {participant.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-[11px] text-slate-500">
+                      {t.messageForm.linkedConversationHint}
+                    </p>
+                  </div>
+                  {linkedParticipantId ? (
+                    <LinkedConversationEditor participantId={linkedParticipantId} />
                   ) : null}
                 </div>
               ) : null}
@@ -604,20 +678,20 @@ export const MessageForm = ({
           disabled={type === "image" && !imageUrl}
           onClick={() => {
             if (type === "image" && !imageUrl) {
-              setImageError("Please upload an image for this message.")
+              setImageError(t.messageForm.pleaseUploadImage)
             }
           }}
         >
-          {submitLabel ?? (initial ? "Save changes" : "Add message")}
+          {submitLabel ?? (initial ? t.messageForm.saveChanges : t.messageForm.addMessage)}
         </Button>
         {initial ? (
           <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
+            {t.messageForm.cancel}
           </Button>
         ) : null}
         {showAdvancedToggle ? (
           <Button type="button" variant="ghost" onClick={onToggleAdvanced}>
-            {advancedOpen ? "Hide advanced" : "Advanced"}
+            {advancedOpen ? t.messageForm.hideAdvanced : t.messageForm.advanced}
           </Button>
         ) : null}
       </div>

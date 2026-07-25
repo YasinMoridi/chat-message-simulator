@@ -14,7 +14,12 @@ interface UseConversationPlaybackOptions {
    * "..." dots bubble used for everyone else.
    */
   selfId?: string
+  /** Each linkable participant's own (visible) messages, keyed by participantId. */
+  subConversations?: Record<string, Message[]>
 }
+
+/** Which chat is currently being animated/shown. */
+export type ActiveThread = { kind: "main" } | { kind: "sub"; participantId: string }
 
 /** How long the notification banner stays up before it slides away. */
 const BANNER_HOLD_MS = 2600
@@ -34,7 +39,7 @@ const MAX_OWN_TYPING_MS = 6000
 
 export const useConversationPlayback = (
   messages: Message[],
-  { soundEnabled = true, selfId }: UseConversationPlaybackOptions = {},
+  { soundEnabled = true, selfId, subConversations = {} }: UseConversationPlaybackOptions = {},
 ) => {
   const [revealCount, setRevealCount] = useState(messages.length)
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
@@ -45,9 +50,33 @@ export const useConversationPlayback = (
   const [isPlaying, setIsPlaying] = useState(false)
   const [bannerMessage, setBannerMessage] = useState<Message | null>(null)
   const [bannerVisible, setBannerVisible] = useState(false)
+  // Which chat the preview is currently showing. "main" unless a clickable,
+  // linked notification has been tapped (or auto-tapped) and its side-chat
+  // is now open.
+  const [activeThread, setActiveThread] = useState<ActiveThread>({ kind: "main" })
+  const [subRevealCount, setSubRevealCount] = useState(0)
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bannerTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const keystrokeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Kept fresh via effect below so the resume-after-side-chat continuation
+  // (which can fire long after `play()` was originally called) always sees
+  // the latest props instead of a stale closure.
+  const messagesRef = useRef(messages)
+  const selfIdRef = useRef(selfId)
+  const subConversationsRef = useRef(subConversations)
+  const soundEnabledRef = useRef(soundEnabled)
+  useEffect(() => {
+    messagesRef.current = messages
+    selfIdRef.current = selfId
+    subConversationsRef.current = subConversations
+    soundEnabledRef.current = soundEnabled
+  })
+
+  // Index in the main thread to resume at once a linked side-chat that was
+  // opened from it finishes (or scripts a return). Only meaningful while
+  // activeThread.kind === "sub".
+  const pendingMainResumeIndexRef = useRef(0)
 
   const clearPendingTimeout = () => {
     if (timeoutRef.current) {
@@ -109,6 +138,110 @@ export const useConversationPlayback = (
     setTypingSenderId(null)
     setTypingDraftText(null)
     setRevealCount(messages.length)
+    setActiveThread({ kind: "main" })
+    setSubRevealCount(0)
+  }
+
+  // Works out how long a message should "type" for and how long to wait
+  // after, including the real-keystroke simulation for the current
+  // participant's own text messages. Shared by both the main thread and any
+  // side-chat, since the logic doesn't depend on which one it's playing.
+  const prepareMessageTiming = (message: Message) => {
+    const text = message.content
+    const isOwnTextMessage =
+      message.type === "text" &&
+      Boolean(selfIdRef.current) &&
+      message.senderId === selfIdRef.current &&
+      text.length > 0
+
+    let typingMs: number
+    let restMs: number
+
+    if (isOwnTextMessage) {
+      const keystrokeDelay = Math.min(
+        MAX_KEYSTROKE_MS,
+        Math.max(MIN_KEYSTROKE_MS, MAX_OWN_TYPING_MS / text.length),
+      )
+      typingMs = Math.min(MAX_OWN_TYPING_MS, Math.max(MIN_OWN_TYPING_MS, text.length * keystrokeDelay))
+      const totalDelay = message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS
+      restMs = Math.max(250, totalDelay - typingMs)
+    } else {
+      ;({ typingMs, restMs } = computeRevealTiming(message.delayMs))
+    }
+
+    return { typingMs, restMs, isOwnTextMessage, text }
+  }
+
+  const beginTypingSimulation = (
+    message: Message,
+    isOwnTextMessage: boolean,
+    text: string,
+    typingMs: number,
+  ) => {
+    if (message.type !== "system" && message.type !== "notification") {
+      setTypingSenderId(message.senderId)
+    }
+    if (isOwnTextMessage) {
+      setTypingDraftText("")
+      let charIndex = 0
+      const keystrokeDelay = typingMs / text.length
+      clearKeystrokeInterval()
+      keystrokeIntervalRef.current = setInterval(() => {
+        charIndex += 1
+        setTypingDraftText(text.slice(0, charIndex))
+        if (charIndex >= text.length) {
+          clearKeystrokeInterval()
+        }
+      }, keystrokeDelay)
+    } else {
+      setTypingDraftText(null)
+    }
+  }
+
+  // Runs the main thread starting at `startIndex` - used both by play() and
+  // by the "resume after a side-chat closed" continuation.
+  const runMainFrom = (startIndex: number) => {
+    const step = (index: number) => {
+      const msgs = messagesRef.current
+      if (index >= msgs.length) {
+        setIsPlaying(false)
+        setTypingSenderId(null)
+        setTypingDraftText(null)
+        return
+      }
+
+      const message = msgs[index]
+      const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
+      beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
+
+      timeoutRef.current = setTimeout(() => {
+        clearKeystrokeInterval()
+        setTypingSenderId(null)
+        setTypingDraftText(null)
+        setRevealCount(index + 1)
+        if (soundEnabledRef.current && message.type !== "system") {
+          playMessageSound()
+        }
+        if (message.type === "notification") {
+          showBanner(message, restMs)
+        }
+
+        // A clickable notification that's linked to a real side-chat pauses
+        // the main thread right here - only a tap (real or auto-scripted)
+        // moves the story forward from this point.
+        const opensLinkedThread =
+          message.type === "notification" &&
+          Boolean(message.notificationClickable) &&
+          Boolean(message.linkedParticipantId)
+        if (opensLinkedThread) {
+          pendingMainResumeIndexRef.current = index + 1
+          return
+        }
+
+        timeoutRef.current = setTimeout(() => step(index + 1), restMs)
+      }, typingMs)
+    }
+    step(startIndex)
   }
 
   const play = () => {
@@ -119,90 +252,58 @@ export const useConversationPlayback = (
     setTypingSenderId(null)
     setTypingDraftText(null)
     setRevealCount(0)
+    setActiveThread({ kind: "main" })
+    setSubRevealCount(0)
+    runMainFrom(0)
+  }
+
+  // Opens the side-chat linked to `participantId` (called once a clickable
+  // notification is actually tapped, live or auto-scripted): pauses the
+  // main thread and starts playing that participant's own messages instead.
+  const openLinkedConversation = (participantId: string) => {
+    clearPendingTimeout()
+    clearKeystrokeInterval()
+    dismissBanner()
+    setActiveThread({ kind: "sub", participantId })
+    setSubRevealCount(0)
 
     const step = (index: number) => {
-      if (index >= messages.length) {
+      const msgs = subConversationsRef.current[participantId] ?? []
+      if (index >= msgs.length) {
         setIsPlaying(false)
         setTypingSenderId(null)
         setTypingDraftText(null)
         return
       }
 
-      const message = messages[index]
-
-      // For the "self" participant's own text messages, simulate the actual
-      // keystrokes landing in the message input instead of a dots bubble -
-      // it reads much more like someone really typing on their phone. The
-      // typing duration scales with the text length (capped) instead of
-      // reusing the generic dots-bubble timing budget, which was capped at
-      // MAX_TYPING_MS regardless of length and cut long/multi-line messages
-      // off mid-sentence before "sending" them.
-      const text = message.content
-      const isOwnTextMessage =
-        message.type === "text" && Boolean(selfId) && message.senderId === selfId && text.length > 0
-
-      let typingMs: number
-      let restMs: number
-
-      if (isOwnTextMessage) {
-        const keystrokeDelay = Math.min(
-          MAX_KEYSTROKE_MS,
-          Math.max(MIN_KEYSTROKE_MS, MAX_OWN_TYPING_MS / text.length),
-        )
-        typingMs = Math.min(
-          MAX_OWN_TYPING_MS,
-          Math.max(MIN_OWN_TYPING_MS, text.length * keystrokeDelay),
-        )
-        const totalDelay = message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS
-        // Keep whatever pause the author configured, on top of typing -
-        // but never let it look like the message sent itself instantly.
-        restMs = Math.max(250, totalDelay - typingMs)
-      } else {
-        ;({ typingMs, restMs } = computeRevealTiming(message.delayMs))
-      }
-
-      // Show typing dots for whoever is about to send the next message,
-      // including your own outgoing messages (rendered on the right side).
-      // Notification entries aren't "typed" - they just pop in.
-      if (message.type !== "system" && message.type !== "notification") {
-        setTypingSenderId(message.senderId)
-      }
-
-      if (isOwnTextMessage) {
-        setTypingDraftText("")
-        let charIndex = 0
-        const keystrokeDelay = typingMs / text.length
-        clearKeystrokeInterval()
-        keystrokeIntervalRef.current = setInterval(() => {
-          charIndex += 1
-          setTypingDraftText(text.slice(0, charIndex))
-          if (charIndex >= text.length) {
-            clearKeystrokeInterval()
-          }
-        }, keystrokeDelay)
-      } else {
-        setTypingDraftText(null)
-      }
+      const message = msgs[index]
+      const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
+      beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
 
       timeoutRef.current = setTimeout(() => {
         clearKeystrokeInterval()
         setTypingSenderId(null)
         setTypingDraftText(null)
-        setRevealCount(index + 1)
-        if (soundEnabled && message.type !== "system") {
+        setSubRevealCount(index + 1)
+        if (soundEnabledRef.current && message.type !== "system") {
           playMessageSound()
         }
-        // Only entries explicitly authored as "Notification" trigger the
-        // OS-style banner - regular chat messages never do.
         if (message.type === "notification") {
           showBanner(message, restMs)
+        }
+
+        if (message.returnToParent) {
+          timeoutRef.current = setTimeout(() => {
+            setActiveThread({ kind: "main" })
+            setSubRevealCount(0)
+            runMainFrom(pendingMainResumeIndexRef.current)
+          }, restMs)
+          return
         }
 
         timeoutRef.current = setTimeout(() => step(index + 1), restMs)
       }, typingMs)
     }
-
-    // Kick off with the first message's own delay before it appears.
     step(0)
   }
 
@@ -216,7 +317,7 @@ export const useConversationPlayback = (
   )
 
   return {
-    /** How many messages (in order) should currently be rendered. */
+    /** How many messages (in order) of the MAIN thread should currently be rendered. */
     revealCount,
     /** senderId of whoever is "typing" right now, or null. */
     typingSenderId,
@@ -234,5 +335,11 @@ export const useConversationPlayback = (
     bannerMessage,
     /** Whether the banner should be in its "shown" (vs sliding out) state. */
     bannerVisible,
+    /** Which chat ("main" or a participant's side-chat) is currently active. */
+    activeThread,
+    /** How many messages of the currently-open side-chat should be rendered. */
+    subRevealCount,
+    /** Opens (and starts playing) the side-chat linked to a tapped notification. */
+    openLinkedConversation,
   }
 }

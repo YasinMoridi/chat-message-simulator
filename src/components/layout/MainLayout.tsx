@@ -37,6 +37,7 @@ import { SettingsPanel } from "@/components/layout/SettingsPanel"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { LayoutSelector } from "@/components/layout/LayoutSelector"
+import { useTranslation } from "@/i18n/useTranslation"
 import {
   Dialog,
   DialogContent,
@@ -59,6 +60,7 @@ const buildDownloadName = (format: "png" | "jpeg", index?: number) => {
 }
 
 export const MainLayout = () => {
+  const { dir } = useTranslation()
   const exportRef = useRef<HTMLDivElement | null>(null)
   const fullExportRef = useRef<HTMLDivElement | null>(null)
   const previewContainerRef = useRef<HTMLDivElement | null>(null)
@@ -100,6 +102,15 @@ export const MainLayout = () => {
     () => getSelfParticipantId(conversation.participants, activeParticipantId),
     [conversation.participants, activeParticipantId],
   )
+  // Each linkable participant's own side-chat messages, visible-only - fed
+  // to the playback hook so it can play a linked notification's chat.
+  const subConversationsForPlayback = useMemo(() => {
+    const map: Record<string, Message[]> = {}
+    for (const thread of conversation.subConversations ?? []) {
+      map[thread.participantId] = thread.messages.filter((message) => !message.isHidden)
+    }
+    return map
+  }, [conversation.subConversations])
   const {
     revealCount,
     typingSenderId,
@@ -109,7 +120,10 @@ export const MainLayout = () => {
     stop,
     bannerMessage,
     bannerVisible,
-  } = useConversationPlayback(visiblePlaybackMessages, { selfId })
+    activeThread,
+    subRevealCount,
+    openLinkedConversation,
+  } = useConversationPlayback(visiblePlaybackMessages, { selfId, subConversations: subConversationsForPlayback })
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
     : undefined
@@ -136,16 +150,45 @@ export const MainLayout = () => {
       status: "sent",
     }
   }, [isPlaying, draftMessage])
-  const playbackConversation = useMemo(
-    () => ({
+  // When a linked notification is open, the phone should show a real,
+  // separate chat containing only "you" and that participant - built from
+  // their side-chat - instead of the main conversation.
+  const activeThreadParticipant =
+    activeThread.kind === "sub"
+      ? conversation.participants.find((participant) => participant.id === activeThread.participantId)
+      : undefined
+  const playbackConversation = useMemo(() => {
+    if (activeThread.kind === "sub" && activeThreadParticipant) {
+      const selfParticipant = conversation.participants.find((participant) => participant.id === selfId)
+      const subMessages = subConversationsForPlayback[activeThread.participantId] ?? []
+      return {
+        ...conversation,
+        groupName: undefined,
+        participants: selfParticipant
+          ? [selfParticipant, activeThreadParticipant]
+          : [activeThreadParticipant],
+        messages: subMessages.slice(0, subRevealCount),
+      }
+    }
+    return {
       ...conversation,
       messages: [
         ...(isPlaying ? visiblePlaybackMessages.slice(0, revealCount) : conversation.messages),
         ...(draftPreviewMessage ? [draftPreviewMessage] : []),
       ],
-    }),
-    [conversation, isPlaying, visiblePlaybackMessages, revealCount, draftPreviewMessage],
-  )
+    }
+  }, [
+    conversation,
+    isPlaying,
+    visiblePlaybackMessages,
+    revealCount,
+    draftPreviewMessage,
+    activeThread,
+    activeThreadParticipant,
+    subConversationsForPlayback,
+    subRevealCount,
+    selfId,
+  ])
 
   const handleQuickExport = async (mode: "download" | "preview") => {
     const target = exportSettings.captureMode === "full" ? fullExportRef.current : exportRef.current
@@ -394,10 +437,18 @@ export const MainLayout = () => {
   const handleBannerClick = () => {
     if (!bannerMessage?.notificationClickable || isOpeningChatFromBanner) return
     setIsOpeningChatFromBanner(true)
+    const linkedParticipantId = bannerMessage.linkedParticipantId
     const delay = bannerMessage.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS
     bannerOpenTimeoutRef.current = setTimeout(() => {
-      stop()
       setIsOpeningChatFromBanner(false)
+      if (linkedParticipantId) {
+        // Real, separate chat: swap the phone screen over to it.
+        openLinkedConversation(linkedParticipantId)
+      } else {
+        // No side-chat configured - fall back to the old behavior of just
+        // revealing the rest of the current conversation.
+        stop()
+      }
       requestAnimationFrame(() => scrollPreviewConversation("bottom"))
     }, delay)
   }
@@ -505,7 +556,7 @@ export const MainLayout = () => {
       <div className="mx-auto flex flex-col gap-6 px-4 pt-6 pb-24 lg:pb-6">
         <Toolbar />
 
-        <Card>
+        <Card dir={dir}>
           <CardContent className="space-y-3 py-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -554,6 +605,7 @@ export const MainLayout = () => {
 
         <div className="grid gap-6 lg:grid-cols-[minmax(320px,420px)_1fr]">
           <aside
+            dir={dir}
             className={cn(
               "space-y-6",
               ui.isSidebarOpen && ui.activeView !== "preview" ? "block" : "hidden",
