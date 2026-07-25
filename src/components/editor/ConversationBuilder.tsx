@@ -26,6 +26,7 @@ import {
   Trash2,
 } from "lucide-react"
 import type { Message, MessageStatus, MessageType } from "@/types/message"
+import type { Participant } from "@/types/conversation"
 import {
   DEFAULT_MESSAGE_DELAY_MS,
   DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
@@ -100,6 +101,8 @@ interface EasyMessageFields {
   notificationOpenDelayMs?: number
   notificationAutoOpen?: boolean
   notificationAutoOpenDelayMs?: number
+  /** Raw `link=Name` value from the tag block - resolved to a participant id by the caller, which has the roster. */
+  linkedParticipantName?: string
 }
 
 /** Turns a parsed tag map into the full set of message fields easy mode understands. */
@@ -161,6 +164,11 @@ const fieldsFromEasyTags = (tags: EasyTags): EasyMessageFields => {
         : DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS
   }
 
+  const linkedParticipantName =
+    type === "notification" && hasClickable && typeof tags.link === "string" && tags.link.trim()
+      ? tags.link.trim()
+      : undefined
+
   return {
     type,
     status,
@@ -172,11 +180,12 @@ const fieldsFromEasyTags = (tags: EasyTags): EasyMessageFields => {
     notificationOpenDelayMs,
     notificationAutoOpen,
     notificationAutoOpenDelayMs,
+    linkedParticipantName,
   }
 }
 
 /** The inverse of fieldsFromEasyTags - only emits tags for values that differ from the defaults. */
-const easyTagsFromMessage = (message: Message): string => {
+const easyTagsFromMessage = (message: Message, participants: Participant[]): string => {
   const tags: string[] = []
   if (message.type === "notification") tags.push("notification")
   else if (message.type === "system") tags.push("system")
@@ -210,6 +219,14 @@ const easyTagsFromMessage = (message: Message): string => {
       }
       if (message.notificationOverride.avatarUrl) {
         tags.push(`avatar=${quoteTagValue(message.notificationOverride.avatarUrl)}`)
+      }
+    }
+    if (message.notificationClickable && message.linkedParticipantId) {
+      const linkedParticipant = participants.find(
+        (participant) => participant.id === message.linkedParticipantId,
+      )
+      if (linkedParticipant) {
+        tags.push(`link=${quoteTagValue(linkedParticipant.name)}`)
       }
     }
   }
@@ -418,7 +435,7 @@ export const ConversationBuilder = () => {
           const participant = participants.find((candidate) => candidate.id === message.senderId)
           marker = participant ? `${participant.name}:` : ">"
         }
-        const tagsStr = easyTagsFromMessage(message)
+        const tagsStr = easyTagsFromMessage(message, participants)
         return [marker, message.content, tagsStr].filter((part) => part !== "").join(" ")
       })
       .join("\n")
@@ -515,8 +532,27 @@ export const ConversationBuilder = () => {
       if (participantId) ensureConversationMember(participantId)
     })
 
+    // Auto-create a participant for any `link=Name` notification target that
+    // isn't already on the roster - deliberately NOT added as a main-chat
+    // member, since they only exist inside the linked side-chat.
+    rawEntries.forEach((entry) => {
+      const linkName = typeof entry.tags.link === "string" ? entry.tags.link.trim() : ""
+      if (!linkName) return
+      const key = linkName.toLowerCase()
+      if (nameToId.has(key)) return
+      addParticipant({
+        name: linkName,
+        status: "online",
+        color: pickEasyModeParticipantColor(nameToId.size),
+      })
+      const created = useConversationStore.getState().conversation.participants.at(-1)
+      if (created) nameToId.set(key, created.id)
+    })
+
     let hadMissingReceiver = false
-    const finalEntries: Array<{ senderId: string; content: string } & EasyMessageFields> = []
+    const finalEntries: Array<
+      { senderId: string; content: string; linkedParticipantId?: string } & EasyMessageFields
+    > = []
 
     rawEntries.forEach((entry) => {
       let senderId: string | undefined
@@ -536,7 +572,11 @@ export const ConversationBuilder = () => {
       const content = entry.textParts.filter(Boolean).join("\n")
       if (!content && fields.type !== "image") return
 
-      finalEntries.push({ senderId, content, ...fields })
+      const linkedParticipantId = fields.linkedParticipantName
+        ? nameToId.get(fields.linkedParticipantName.toLowerCase())
+        : undefined
+
+      finalEntries.push({ senderId, content, linkedParticipantId, ...fields })
     })
 
     if (hadMissingReceiver) {
@@ -568,6 +608,7 @@ export const ConversationBuilder = () => {
         notificationOpenDelayMs: entry.notificationOpenDelayMs,
         notificationAutoOpen: entry.notificationAutoOpen,
         notificationAutoOpenDelayMs: entry.notificationAutoOpenDelayMs,
+        linkedParticipantId: entry.linkedParticipantId,
       }
     })
 
@@ -679,7 +720,7 @@ export const ConversationBuilder = () => {
                     setEasyInput(event.target.value)
                     if (easyError) setEasyError(null)
                   }}
-                  placeholder={`< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram]`}
+                  placeholder={`< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram link="Sarah"]`}
                   className="min-h-[280px] resize-y font-mono"
                 />
                 <div className="space-y-1 text-xs text-slate-500">
@@ -703,9 +744,11 @@ export const ConversationBuilder = () => {
                     seconds, no click needed),{" "}
                     <span className="font-mono">as="Name"</span>,{" "}
                     <span className="font-mono">app="App"</span>,{" "}
-                    <span className="font-mono">avatar=url</span>. Example:{" "}
+                    <span className="font-mono">avatar=url</span>,{" "}
+                    <span className="font-mono">link="Name"</span> (opens a separate chat with
+                    that person when tapped - auto-creates them if new). Example:{" "}
                     <span className="font-mono">
-                      &gt; New message [notification clickable auto=1.5 as="Sarah"]
+                      &gt; New message [notification clickable auto=1.5 as="Sarah" link="Sarah"]
                     </span>
                   </p>
                 </div>

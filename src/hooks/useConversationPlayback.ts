@@ -104,14 +104,31 @@ export const useConversationPlayback = (
   }
 
   // Slides the banner in for `message`, then back out after BANNER_HOLD_MS
-  // (or sooner if the next message is due before that).
-  const showBanner = (message: Message, holdMs: number) => {
+  // (or sooner if the next message is due before that) - UNLESS `persist` is
+  // set, in which case no auto-hide timer is scheduled at all.
+  //
+  // `persist` is used for any `notificationClickable` message: those banners
+  // must stay up until a real or auto-scripted tap actually happens, which
+  // is what calls `dismissBanner` (via `openLinkedConversation`/`stop`).
+  // Previously every banner - including clickable ones - was auto-hidden
+  // after a fixed timer derived from the message's own `restMs`/`delayMs`,
+  // completely unrelated to `notificationAutoOpenDelayMs`. Whenever the
+  // scripted auto-open delay (or a slow real click) was longer than that
+  // timer, the banner (and `bannerMessage`) got cleared first - which made
+  // the auto-tap effect in MainLayout see `bannerVisible === false` and
+  // cancel its own pending timeout before it ever fired. That's why a
+  // clickable+linked notification froze the preview instead of opening the
+  // linked chat: the tap that was supposed to call `openLinkedConversation`
+  // simply got cancelled out from under itself.
+  const showBanner = (message: Message, holdMs: number, options?: { persist?: boolean }) => {
     clearBannerTimeouts()
     setBannerMessage(message)
     // Mount hidden first, then flip to visible a tick later so the
     // slide-down/fade transition actually plays instead of popping in.
     const raf = requestAnimationFrame(() => setBannerVisible(true))
     bannerTimeoutsRef.current.push(raf as unknown as ReturnType<typeof setTimeout>)
+
+    if (options?.persist) return
 
     const hideAfter = Math.max(600, Math.min(holdMs, BANNER_HOLD_MS))
     const hideTimeout = setTimeout(() => {
@@ -129,6 +146,19 @@ export const useConversationPlayback = (
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
+
+  // Same as above, but for whichever linked side-chat is currently open: once
+  // its scripted autoplay has finished (or if it's just sitting open), keep
+  // showing every message it actually has - so messages added, edited, or
+  // removed via the LinkedConversationEditor after a notification opened
+  // this chat show up immediately instead of staying stuck at the count from
+  // whenever the auto-play step loop last touched it.
+  useEffect(() => {
+    if (isPlaying) return
+    if (activeThread.kind !== "sub") return
+    const msgs = subConversations[activeThread.participantId] ?? []
+    setSubRevealCount(msgs.length)
+  }, [isPlaying, activeThread, subConversations])
 
   const stop = () => {
     clearPendingTimeout()
@@ -223,7 +253,7 @@ export const useConversationPlayback = (
           playMessageSound()
         }
         if (message.type === "notification") {
-          showBanner(message, restMs)
+          showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
         }
 
         // A clickable notification that's linked to a real side-chat pauses
@@ -289,7 +319,7 @@ export const useConversationPlayback = (
           playMessageSound()
         }
         if (message.type === "notification") {
-          showBanner(message, restMs)
+          showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
         }
 
         if (message.returnToParent) {

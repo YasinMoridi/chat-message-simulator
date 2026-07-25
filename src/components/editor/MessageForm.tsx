@@ -68,11 +68,6 @@ const resolveSenderId = (preferredId: string | undefined, participants: Particip
   return participants[0]?.id ?? ""
 }
 
-/** Colors cycled through when a brand-new sender is created by typing a name that doesn't match anyone yet. */
-const NEW_PARTICIPANT_COLORS = ["#22c55e", "#0b84ff", "#f97316", "#a855f7", "#ef4444", "#14b8a6"]
-const pickNewParticipantColor = (participantCount: number) =>
-  NEW_PARTICIPANT_COLORS[participantCount % NEW_PARTICIPANT_COLORS.length]
-
 const toInputValue = (iso: string) => {
   const date = new Date(iso)
   const offset = date.getTimezoneOffset() * 60000
@@ -96,16 +91,14 @@ export const MessageForm = ({
   onCancel,
 }: MessageFormProps) => {
   const { t } = useTranslation()
+  // The full set of participants this form is allowed to pick a sender
+  // from. Falls back to `participants` (this conversation/thread's actual
+  // members) when no wider roster was given - e.g. inside a linked
+  // side-chat, where only its two members should ever be selectable.
+  const roster = rosterParticipants ?? participants
   const [content, setContent] = useState(initial?.content ?? "")
   const [senderId, setSenderId] = useState(
-    initial?.senderId ?? resolveSenderId(defaultSenderId, participants),
-  )
-  const [senderNameInput, setSenderNameInput] = useState(
-    () =>
-      participants.find(
-        (participant) =>
-          participant.id === (initial?.senderId ?? resolveSenderId(defaultSenderId, participants)),
-      )?.name ?? "",
+    initial?.senderId ?? resolveSenderId(defaultSenderId, roster),
   )
   const [timestamp, setTimestamp] = useState(
     initial?.timestamp ? toInputValue(initial.timestamp) : toInputValue(new Date().toISOString()),
@@ -149,7 +142,6 @@ export const MessageForm = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const setDraftMessage = useConversationStore((state) => state.setDraftMessage)
-  const addParticipant = useConversationStore((state) => state.addParticipant)
   const ensureConversationMember = useConversationStore((state) => state.ensureConversationMember)
   const notificationSenderNames = useConversationStore((state) => state.notificationSenderNames)
   const addNotificationSenderName = useConversationStore((state) => state.addNotificationSenderName)
@@ -183,27 +175,15 @@ export const MessageForm = ({
     if (initial) return
     const previousDefault = previousDefaultRef.current
     previousDefaultRef.current = defaultSenderId
-    const nextDefault = resolveSenderId(defaultSenderId, participants)
+    const nextDefault = resolveSenderId(defaultSenderId, roster)
     setSenderId((current) => {
-      const isValid = participants.some((participant) => participant.id === current)
+      const isValid = roster.some((participant) => participant.id === current)
       if (!current || !isValid || current === previousDefault) {
         return nextDefault
       }
       return current
     })
-  }, [defaultSenderId, initial, participants])
-
-  // Whenever senderId changes for reasons other than free typing (initial
-  // load, the default-sync above, picking an existing participant), mirror
-  // its name into the text field. This intentionally does NOT run while the
-  // user is typing a name that doesn't match anyone yet, since senderId
-  // won't have changed in that case - so an in-progress new name is never
-  // clobbered.
-  useEffect(() => {
-    const match = participants.find((participant) => participant.id === senderId)
-    if (match) setSenderNameInput(match.name)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [senderId])
+  }, [defaultSenderId, initial, roster])
 
   const insertAtCursor = (text: string) => {
     const element = textareaRef.current
@@ -256,99 +236,85 @@ export const MessageForm = ({
     }
   }
 
+  // Deliberately NOT a native form-submit handler (see below for why) - just
+  // a plain function the submit button calls directly.
+  const handleSubmit = () => {
+    if (type === "image" && !imageUrl) {
+      setImageError(t.messageForm.pleaseUploadImage)
+      return
+    }
+    if (type === "notification" && notificationOverrideEnabled && notificationSenderName.trim()) {
+      addNotificationSenderName(notificationSenderName)
+    }
+    // The sender is now always picked from `roster` via the Select
+    // below - never free-typed - so `senderId` is already a real,
+    // existing participant id. No name-matching or implicit
+    // participant creation happens here anymore.
+    const finalSenderId = senderId
+    // rosterParticipants is only passed for the main conversation's
+    // forms - a roster character who's about to speak here should
+    // count as a member, even if they were previously benched.
+    if (rosterParticipants && finalSenderId) {
+      ensureConversationMember(finalSenderId)
+    }
+    onSubmit({
+      senderId: finalSenderId,
+      content,
+      imageUrl: type === "image" ? imageUrl : undefined,
+      timestamp: fromInputValue(timestamp),
+      type,
+      status,
+      delayMs: Math.round(Math.max(0, delaySeconds) * 1000),
+      notificationOverride:
+        type === "notification" && notificationOverrideEnabled
+          ? {
+              enabled: true,
+              senderName: notificationSenderName.trim() || undefined,
+              appName: notificationAppName.trim() || undefined,
+              avatarUrl: notificationAvatarUrl.trim() || undefined,
+            }
+          : { enabled: false },
+      notificationClickable: type === "notification" ? notificationClickable : undefined,
+      notificationOpenDelayMs:
+        type === "notification" && notificationClickable
+          ? Math.round(Math.max(0, notificationOpenDelaySeconds) * 1000)
+          : undefined,
+      notificationAutoOpen:
+        type === "notification" && notificationClickable ? notificationAutoOpen : undefined,
+      notificationAutoOpenDelayMs:
+        type === "notification" && notificationClickable && notificationAutoOpen
+          ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
+          : undefined,
+      linkedParticipantId:
+        type === "notification" && notificationClickable
+          ? linkedParticipantId || undefined
+          : undefined,
+      returnToParent: isSubMessage ? returnToParent : undefined,
+    })
+    if (resetOnSubmit && !initial) {
+      setContent("")
+      setTimestamp(toInputValue(new Date().toISOString()))
+      setType("text")
+      setStatus("sent")
+      setSenderId(resolveSenderId(defaultSenderId, roster))
+      setImageUrl("")
+      setImageError(null)
+      setDelaySeconds(DEFAULT_MESSAGE_DELAY_MS / 1000)
+      setNotificationOverrideEnabled(false)
+      setNotificationSenderName("")
+      setNotificationAppName("")
+      setNotificationAvatarUrl("")
+      setNotificationClickable(false)
+      setNotificationOpenDelaySeconds(DEFAULT_NOTIFICATION_OPEN_DELAY_MS / 1000)
+      setNotificationAutoOpen(false)
+      setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
+      setLinkedParticipantId("")
+      setReturnToParent(false)
+    }
+  }
+
   return (
-    <form
-      className="space-y-3"
-      onSubmit={(event) => {
-        event.preventDefault()
-        if (type === "image" && !imageUrl) {
-          setImageError(t.messageForm.pleaseUploadImage)
-          return
-        }
-        if (type === "notification" && notificationOverrideEnabled && notificationSenderName.trim()) {
-          addNotificationSenderName(notificationSenderName)
-        }
-        const trimmedSenderName = senderNameInput.trim()
-        // Match against the full roster (when known), not just the
-        // narrower list this form offers as senders - otherwise typing an
-        // existing-but-benched character's name would create a duplicate.
-        const roster = rosterParticipants ?? participants
-        const matchedParticipant = roster.find(
-          (participant) => participant.name.trim().toLowerCase() === trimmedSenderName.toLowerCase(),
-        )
-        let finalSenderId = matchedParticipant?.id ?? senderId
-        if (!matchedParticipant && trimmedSenderName) {
-          addParticipant({
-            name: trimmedSenderName,
-            status: "online",
-            color: pickNewParticipantColor(roster.length),
-          })
-          const created = useConversationStore.getState().conversation.participants.at(-1)
-          if (created) finalSenderId = created.id
-        }
-        // rosterParticipants is only passed for the main conversation's
-        // forms - a character who's about to speak here should count as a
-        // member, whether they were just created or already existed but
-        // were benched.
-        if (rosterParticipants && finalSenderId) {
-          ensureConversationMember(finalSenderId)
-        }
-        onSubmit({
-          senderId: finalSenderId,
-          content,
-          imageUrl: type === "image" ? imageUrl : undefined,
-          timestamp: fromInputValue(timestamp),
-          type,
-          status,
-          delayMs: Math.round(Math.max(0, delaySeconds) * 1000),
-          notificationOverride:
-            type === "notification" && notificationOverrideEnabled
-              ? {
-                  enabled: true,
-                  senderName: notificationSenderName.trim() || undefined,
-                  appName: notificationAppName.trim() || undefined,
-                  avatarUrl: notificationAvatarUrl.trim() || undefined,
-                }
-              : { enabled: false },
-          notificationClickable: type === "notification" ? notificationClickable : undefined,
-          notificationOpenDelayMs:
-            type === "notification" && notificationClickable
-              ? Math.round(Math.max(0, notificationOpenDelaySeconds) * 1000)
-              : undefined,
-          notificationAutoOpen:
-            type === "notification" && notificationClickable ? notificationAutoOpen : undefined,
-          notificationAutoOpenDelayMs:
-            type === "notification" && notificationClickable && notificationAutoOpen
-              ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
-              : undefined,
-          linkedParticipantId:
-            type === "notification" && notificationClickable
-              ? linkedParticipantId || undefined
-              : undefined,
-          returnToParent: isSubMessage ? returnToParent : undefined,
-        })
-        if (resetOnSubmit && !initial) {
-          setContent("")
-          setTimestamp(toInputValue(new Date().toISOString()))
-          setType("text")
-          setStatus("sent")
-          setSenderId(resolveSenderId(defaultSenderId, participants))
-          setImageUrl("")
-          setImageError(null)
-          setDelaySeconds(DEFAULT_MESSAGE_DELAY_MS / 1000)
-          setNotificationOverrideEnabled(false)
-          setNotificationSenderName("")
-          setNotificationAppName("")
-          setNotificationAvatarUrl("")
-          setNotificationClickable(false)
-          setNotificationOpenDelaySeconds(DEFAULT_NOTIFICATION_OPEN_DELAY_MS / 1000)
-          setNotificationAutoOpen(false)
-          setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
-          setLinkedParticipantId("")
-          setReturnToParent(false)
-        }
-      }}
-    >
+    <div className="space-y-3">
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Label>{type === "image" ? t.messageForm.caption : t.messageForm.message}</Label>
@@ -431,24 +397,18 @@ export const MessageForm = ({
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>{t.messageForm.sender}</Label>
-              <Input
-                list="message-sender-name-options"
-                value={senderNameInput}
-                onChange={(event) => {
-                  const value = event.target.value
-                  setSenderNameInput(value)
-                  const match = participants.find(
-                    (participant) => participant.name.trim().toLowerCase() === value.trim().toLowerCase(),
-                  )
-                  if (match) setSenderId(match.id)
-                }}
-                placeholder={t.messageForm.senderPlaceholder}
-              />
-              <datalist id="message-sender-name-options">
-                {participants.map((participant) => (
-                  <option key={participant.id} value={participant.name} />
-                ))}
-              </datalist>
+              <Select value={senderId} onValueChange={(value) => setSenderId(value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder={t.messageForm.senderPlaceholder} />
+                </SelectTrigger>
+                <SelectContent>
+                  {roster.map((participant) => (
+                    <SelectItem key={participant.id} value={participant.id}>
+                      {participant.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <p className="text-[11px] text-slate-500">
                 {t.messageForm.senderHint}
               </p>
@@ -651,7 +611,7 @@ export const MessageForm = ({
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">{t.messageForm.linkedConversationNone}</SelectItem>
-                        {(rosterParticipants ?? participants).map((participant) => (
+                        {roster.map((participant) => (
                           <SelectItem key={participant.id} value={participant.id}>
                             {participant.name}
                           </SelectItem>
@@ -674,13 +634,9 @@ export const MessageForm = ({
 
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          type="submit"
+          type="button"
           disabled={type === "image" && !imageUrl}
-          onClick={() => {
-            if (type === "image" && !imageUrl) {
-              setImageError(t.messageForm.pleaseUploadImage)
-            }
-          }}
+          onClick={handleSubmit}
         >
           {submitLabel ?? (initial ? t.messageForm.saveChanges : t.messageForm.addMessage)}
         </Button>
@@ -695,6 +651,6 @@ export const MessageForm = ({
           </Button>
         ) : null}
       </div>
-    </form>
+    </div>
   )
 }

@@ -161,13 +161,24 @@ export const MainLayout = () => {
     if (activeThread.kind === "sub" && activeThreadParticipant) {
       const selfParticipant = conversation.participants.find((participant) => participant.id === selfId)
       const subMessages = subConversationsForPlayback[activeThread.participantId] ?? []
+      // Only attach the live draft bubble here if it actually belongs to
+      // this side-chat (i.e. it's being composed in this thread's own
+      // LinkedConversationEditor) - otherwise a draft left over from the
+      // main conversation's builder could leak into this screen.
+      const draftBelongsToThread =
+        draftPreviewMessage &&
+        (draftPreviewMessage.senderId === selfId ||
+          draftPreviewMessage.senderId === activeThreadParticipant.id)
       return {
         ...conversation,
         groupName: undefined,
         participants: selfParticipant
           ? [selfParticipant, activeThreadParticipant]
           : [activeThreadParticipant],
-        messages: subMessages.slice(0, subRevealCount),
+        messages: [
+          ...subMessages.slice(0, subRevealCount),
+          ...(draftBelongsToThread ? [draftPreviewMessage as Message] : []),
+        ],
       }
     }
     return {
