@@ -169,15 +169,11 @@ export const translations = {
       notificationAppNamePlaceholder: "e.g. Instagram",
       notificationAvatarUrl: "Notification avatar URL (optional)",
       notificationAvatarUrlPlaceholder: "https://...",
-      clickable: "Clickable (opens the chat)",
-      clickableHint: "Let this banner be tapped during live playback, like a real notification that opens the app when you tap it.",
-      opensAfter: "Opens after (seconds)",
-      opensAfterHint: "How long it waits after being tapped before it opens into the full chat.",
-      autoOpen: "Auto-open (no tap needed)",
-      autoOpenHint:
-        "Instead of waiting for someone to actually click the banner, it taps itself during playback - useful when you're directing the timing rather than clicking live.",
-      autoTapsAfter: "Auto-taps after (seconds)",
-      autoTapsAfterHint: "How long the banner sits there after appearing before it taps itself.",
+      clickable: "Opens automatically (no tap needed)",
+      clickableHint:
+        "Once this banner appears, it opens the linked chat by itself after the delay below - nobody has to tap it, live or recorded.",
+      autoTapsAfter: "Opens after (seconds)",
+      autoTapsAfterHint: "How long the banner sits there after appearing before it opens the chat.",
       linkedConversation: "Opens chat with",
       linkedConversationNone: "No linked chat (just reveals the rest of this conversation)",
       linkedConversationHint:
@@ -407,15 +403,11 @@ export const translations = {
       notificationAppNamePlaceholder: "مثلاً Instagram",
       notificationAvatarUrl: "آدرس آواتار نوتیف (اختیاری)",
       notificationAvatarUrlPlaceholder: "https://...",
-      clickable: "قابل کلیک (چت رو باز می‌کنه)",
-      clickableHint: "اجازه بده این بنر توی پخش زنده کلیک بشه، مثل یه نوتیف واقعی که با تپ زدن، اپ رو باز می‌کنه.",
-      opensAfter: "باز می‌شه بعد از (ثانیه)",
-      opensAfterHint: "چقدر بعد از کلیک شدن صبر می‌کنه تا چت کامل باز بشه.",
-      autoOpen: "باز شدن خودکار (بدون نیاز به کلیک)",
-      autoOpenHint:
-        "به‌جای اینکه منتظر بمونه کسی واقعاً روی بنر کلیک کنه، خودش توی پخش، خودکار کلیک می‌کنه - وقتی می‌خوای زمان‌بندی رو خودت کارگردانی کنی مفیده، نه اینکه زنده کلیک کنی.",
-      autoTapsAfter: "کلیک خودکار بعد از (ثانیه)",
-      autoTapsAfterHint: "چقدر بعد از ظاهر شدن بنر صبر می‌کنه تا خودش کلیک کنه.",
+      clickable: "باز شدن خودکار (بدون نیاز به کلیک)",
+      clickableHint:
+        "به محض ظاهر شدن این بنر، خودش بعد از تاخیر پایین، چت مرتبط رو باز می‌کنه - نه توی پخش زنده و نه ضبط‌شده نیازی به کلیک کردن نیست.",
+      autoTapsAfter: "باز می‌شه بعد از (ثانیه)",
+      autoTapsAfterHint: "چقدر بعد از ظاهر شدن بنر صبر می‌کنه تا خودش چت رو باز کنه.",
       linkedConversation: "چت جدا با",
       linkedConversationNone: "بدون چت جدا (فقط ادامه‌ی همین مکالمه نشون داده بشه)",
       linkedConversationHint:

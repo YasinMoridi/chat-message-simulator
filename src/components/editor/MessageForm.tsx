@@ -130,14 +130,13 @@ export const MessageForm = ({
   const [notificationAvatarUrl, setNotificationAvatarUrl] = useState(
     initial?.notificationOverride?.avatarUrl ?? "",
   )
-  const [notificationClickable, setNotificationClickable] = useState(
+  // Single switch: when on, this notification opens its linked chat by
+  // itself after `notificationAutoOpenDelaySeconds` - nobody ever has to
+  // tap anything, live or recorded. Internally this still drives the
+  // underlying notificationClickable + notificationAutoOpen fields (the
+  // playback engine needs both), but the form only exposes one control.
+  const [notificationAutoOpenEnabled, setNotificationAutoOpenEnabled] = useState(
     initial?.notificationClickable ?? false,
-  )
-  const [notificationOpenDelaySeconds, setNotificationOpenDelaySeconds] = useState(
-    (initial?.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS) / 1000,
-  )
-  const [notificationAutoOpen, setNotificationAutoOpen] = useState(
-    initial?.notificationAutoOpen ?? false,
   )
   const [notificationAutoOpenDelaySeconds, setNotificationAutoOpenDelaySeconds] = useState(
     (initial?.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS) / 1000,
@@ -282,19 +281,18 @@ export const MessageForm = ({
               avatarUrl: notificationAvatarUrl.trim() || undefined,
             }
           : { enabled: false },
-      notificationClickable: type === "notification" ? notificationClickable : undefined,
+      notificationClickable: type === "notification" ? notificationAutoOpenEnabled : undefined,
       notificationOpenDelayMs:
-        type === "notification" && notificationClickable
-          ? Math.round(Math.max(0, notificationOpenDelaySeconds) * 1000)
+        type === "notification" && notificationAutoOpenEnabled
+          ? DEFAULT_NOTIFICATION_OPEN_DELAY_MS
           : undefined,
-      notificationAutoOpen:
-        type === "notification" && notificationClickable ? notificationAutoOpen : undefined,
+      notificationAutoOpen: type === "notification" ? notificationAutoOpenEnabled : undefined,
       notificationAutoOpenDelayMs:
-        type === "notification" && notificationClickable && notificationAutoOpen
+        type === "notification" && notificationAutoOpenEnabled
           ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
           : undefined,
       linkedParticipantId:
-        type === "notification" && notificationClickable
+        type === "notification" && notificationAutoOpenEnabled
           ? linkedParticipantId || undefined
           : undefined,
       returnToParent: isSubMessage ? returnToParent : undefined,
@@ -312,9 +310,7 @@ export const MessageForm = ({
       setNotificationSenderName("")
       setNotificationAppName("")
       setNotificationAvatarUrl("")
-      setNotificationClickable(false)
-      setNotificationOpenDelaySeconds(DEFAULT_NOTIFICATION_OPEN_DELAY_MS / 1000)
-      setNotificationAutoOpen(false)
+      setNotificationAutoOpenEnabled(false)
       setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
       setLinkedParticipantId("")
       setReturnToParent(false)
@@ -559,54 +555,29 @@ export const MessageForm = ({
                     {t.messageForm.clickableHint}
                   </p>
                 </div>
-                <Switch checked={notificationClickable} onCheckedChange={setNotificationClickable} />
+                <Switch
+                  checked={notificationAutoOpenEnabled}
+                  onCheckedChange={setNotificationAutoOpenEnabled}
+                />
               </div>
-              {notificationClickable ? (
+              {notificationAutoOpenEnabled ? (
                 <div className="space-y-2">
-                  <Label>{t.messageForm.opensAfter}</Label>
+                  <Label>{t.messageForm.autoTapsAfter}</Label>
                   <Input
                     type="number"
                     min={0}
                     step={0.1}
-                    value={notificationOpenDelaySeconds}
-                    onChange={(event) => setNotificationOpenDelaySeconds(Number(event.target.value))}
+                    value={notificationAutoOpenDelaySeconds}
+                    onChange={(event) =>
+                      setNotificationAutoOpenDelaySeconds(Number(event.target.value))
+                    }
                   />
                   <p className="text-[11px] text-slate-500">
-                    {t.messageForm.opensAfterHint}
+                    {t.messageForm.autoTapsAfterHint}
                   </p>
                 </div>
               ) : null}
-              {notificationClickable ? (
-                <div className="space-y-3 border-t border-slate-100 pt-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="space-y-0.5">
-                      <Label>{t.messageForm.autoOpen}</Label>
-                      <p className="text-[11px] text-slate-500">
-                        {t.messageForm.autoOpenHint}
-                      </p>
-                    </div>
-                    <Switch checked={notificationAutoOpen} onCheckedChange={setNotificationAutoOpen} />
-                  </div>
-                  {notificationAutoOpen ? (
-                    <div className="space-y-2">
-                      <Label>{t.messageForm.autoTapsAfter}</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step={0.1}
-                        value={notificationAutoOpenDelaySeconds}
-                        onChange={(event) =>
-                          setNotificationAutoOpenDelaySeconds(Number(event.target.value))
-                        }
-                      />
-                      <p className="text-[11px] text-slate-500">
-                        {t.messageForm.autoTapsAfterHint}
-                      </p>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {notificationClickable && !isSubMessage ? (
+              {notificationAutoOpenEnabled && !isSubMessage ? (
                 <div className="space-y-3 border-t border-slate-100 pt-3">
                   <div className="space-y-2">
                     <Label>{t.messageForm.linkedConversation}</Label>
