@@ -454,10 +454,14 @@ export const MainLayout = () => {
   // Auto-scroll the preview to the newest message as playback reveals more
   // of the thread (main conversation or an open side-chat), so the phone
   // behaves like a real chat app instead of staying pinned at the top.
+  // `typingSenderId` is included here too: the "..." typing bubble changes
+  // the content height just like a revealed message does, so without it the
+  // indicator can pop in partially hidden behind the input bar until the
+  // next real message finally triggers a scroll.
   useEffect(() => {
     if (!isPlaying) return
     requestAnimationFrame(() => scrollPreviewConversation("bottom"))
-  }, [isPlaying, revealCount, subRevealCount, activeThread])
+  }, [isPlaying, revealCount, subRevealCount, activeThread, typingSenderId])
 
   // Tapping a clickable notification banner mimics opening a real OS
   // notification: after a short configurable delay, it reveals the full
