@@ -18,6 +18,7 @@ import {
   ArrowDown,
   ArrowUp,
   Copy,
+  Download,
   Eye,
   EyeOff,
   GripVertical,
@@ -332,6 +333,7 @@ const MessageRow = ({
 export const ConversationBuilder = () => {
   const { t } = useTranslation()
   const mainMessages = useConversationStore((state) => state.conversation.messages)
+  const groupName = useConversationStore((state) => state.conversation.groupName)
   const participants = useConversationStore((state) => state.conversation.participants)
   const memberIds = useConversationStore((state) => state.conversation.memberIds)
   const subConversations = useConversationStore((state) => state.conversation.subConversations)
@@ -525,20 +527,45 @@ export const ConversationBuilder = () => {
     [],
   )
 
-  const buildEasyText = () =>
-    messages
+  const buildEasyTextForMessages = (msgs: Message[]) =>
+    msgs
       .map((message) => {
-        let marker: string
-        if (message.senderId === threadSelfId) marker = "<"
-        else if (message.senderId === resolveReceiverId()) marker = ">"
-        else {
-          const participant = participants.find((candidate) => candidate.id === message.senderId)
-          marker = participant ? `${participant.name}:` : ">"
-        }
+        const participant = participants.find((candidate) => candidate.id === message.senderId)
+        const marker = participant ? `${participant.name}:` : "Unknown:"
         const tagsStr = easyTagsFromMessage(message, participants)
         return [marker, message.content, tagsStr].filter((part) => part !== "").join(" ")
       })
       .join("\n")
+
+  const buildEasyText = () => buildEasyTextForMessages(messages)
+
+  // The whole story in one file: the main conversation plus every linked
+  // side-chat that actually has messages, each under its own heading - so
+  // exporting for translation doesn't lose anything sitting in a side tab.
+  const buildFullEasyExportText = () => {
+    const sections: string[] = [`# ${t.builder.mainThreadTab}\n${buildEasyTextForMessages(mainMessages)}`]
+    linkedThreadParticipants.forEach((participant) => {
+      const thread = (subConversations ?? []).find((entry) => entry.participantId === participant.id)
+      const msgs = thread?.messages ?? []
+      if (msgs.length === 0) return
+      sections.push(`# ${t.builder.threadTabPrefix} ${participant.name}\n${buildEasyTextForMessages(msgs)}`)
+    })
+    return sections.join("\n\n")
+  }
+
+  const handleExportEasyText = () => {
+    const text = buildFullEasyExportText()
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${(groupName || "conversation").trim().replace(/\s+/g, "-").toLowerCase()}-easy.txt`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    showToast(t.builder.easyModeExported)
+  }
 
   const handleViewModeChange = (mode: "standard" | "easy") => {
     setEditingId(null)
@@ -556,12 +583,10 @@ export const ConversationBuilder = () => {
       showToast(t.builder.easyModeAtLeastOneParticipant, "error")
       return
     }
-    const receiverId = resolveReceiverId()
 
     type RawEntry = { marker: string; textParts: string[]; tags: EasyTags }
     const rawEntries: RawEntry[] = []
     let hadContinuationWithoutEntry = false
-    let hadNamedLineInSubThread = false
 
     easyInput.split("\n").forEach((rawLine) => {
       const trimmed = rawLine.trim()
@@ -569,22 +594,10 @@ export const ConversationBuilder = () => {
 
       let marker: string | null = null
       let rest = ""
-      if (trimmed[0] === "<" || trimmed[0] === ">") {
-        marker = trimmed[0]
-        rest = trimmed.slice(1).trim()
-      } else if (!isSubTab) {
-        // A third named sender only makes sense in the main, potentially
-        // group, conversation - a linked chat is always just the two of you.
-        const namedMatch = trimmed.match(NAMED_LINE_REGEX)
-        if (namedMatch) {
-          marker = namedMatch[1].trim()
-          rest = namedMatch[2]
-        }
-      }
-
-      if (marker === null && isSubTab && NAMED_LINE_REGEX.test(trimmed)) {
-        hadNamedLineInSubThread = true
-        return
+      const namedMatch = trimmed.match(NAMED_LINE_REGEX)
+      if (namedMatch) {
+        marker = namedMatch[1].trim()
+        rest = namedMatch[2]
       }
 
       const { text, tagBlock } = splitTrailingTagBlock(marker === null ? trimmed : rest)
@@ -604,11 +617,6 @@ export const ConversationBuilder = () => {
       Object.assign(last.tags, tags)
     })
 
-    if (hadNamedLineInSubThread) {
-      setEasyError(t.builder.easyModeSubOnlyArrows)
-      showToast(t.builder.easyModeSubOnlyArrows, "error")
-      return
-    }
     if (hadContinuationWithoutEntry || rawEntries.length === 0) {
       setEasyError(t.builder.easyModeStartLine)
       showToast(t.builder.easyModeStartLine, "error")
@@ -617,12 +625,11 @@ export const ConversationBuilder = () => {
 
     // Auto-create a participant for any name that isn't already one of ours.
     // Only relevant in the main conversation - a linked chat's two members
-    // already exist by definition, and named lines are rejected above.
+    // (self and the other participant) already exist by definition.
     const nameToId = new Map<string, string>()
     participants.forEach((participant) => nameToId.set(participant.name.trim().toLowerCase(), participant.id))
     if (!isSubTab) {
       rawEntries.forEach((entry) => {
-        if (entry.marker === "<" || entry.marker === ">") return
         const key = entry.marker.toLowerCase()
         if (nameToId.has(key)) return
         addParticipant({
@@ -638,11 +645,7 @@ export const ConversationBuilder = () => {
       // benched roster character. (nameToId also holds every OTHER roster
       // participant for lookup purposes, so only touch the ones this script
       // actually used.)
-      const usedKeys = new Set(
-        rawEntries
-          .filter((entry) => entry.marker !== "<" && entry.marker !== ">")
-          .map((entry) => entry.marker.toLowerCase()),
-      )
+      const usedKeys = new Set(rawEntries.map((entry) => entry.marker.toLowerCase()))
       usedKeys.forEach((key) => {
         const participantId = nameToId.get(key)
         if (participantId) ensureConversationMember(participantId)
@@ -666,24 +669,21 @@ export const ConversationBuilder = () => {
       })
     }
 
-    let hadMissingReceiver = false
+    let hadNameOutsideSubThread = false
     const finalEntries: Array<
       { senderId: string; content: string; linkedParticipantId?: string } & EasyMessageFields
     > = []
 
     rawEntries.forEach((entry) => {
-      let senderId: string | undefined
-      if (entry.marker === "<") senderId = threadSelfId
-      else if (entry.marker === ">") {
-        if (!receiverId) {
-          hadMissingReceiver = true
-          return
-        }
-        senderId = receiverId
-      } else {
-        senderId = nameToId.get(entry.marker.toLowerCase())
-      }
+      const senderId = nameToId.get(entry.marker.toLowerCase())
       if (!senderId) return
+
+      // A linked chat is only ever between "you" and the one other person it
+      // belongs to - a name that resolves to someone else doesn't belong here.
+      if (isSubTab && !threadMembers.some((member) => member.id === senderId)) {
+        hadNameOutsideSubThread = true
+        return
+      }
 
       const fields = fieldsFromEasyTags(entry.tags)
       const content = entry.textParts.filter(Boolean).join("\n")
@@ -699,9 +699,9 @@ export const ConversationBuilder = () => {
       finalEntries.push({ senderId, content, linkedParticipantId, ...fields })
     })
 
-    if (hadMissingReceiver) {
-      setEasyError(t.builder.easyModeNeedReceiver)
-      showToast(t.builder.easyModeNeedReceiver, "error")
+    if (hadNameOutsideSubThread) {
+      setEasyError(t.builder.easyModeSubOnlyArrows)
+      showToast(t.builder.easyModeSubOnlyArrows, "error")
       return
     }
     if (finalEntries.length === 0) {
@@ -866,14 +866,26 @@ export const ConversationBuilder = () => {
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Label className="text-xs uppercase text-slate-400">{t.builder.easyEditor}</Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setEasyInput(buildEasyText())}
-                >
-                  {t.builder.refresh}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={handleExportEasyText}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {t.builder.exportEasyTxt}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEasyInput(buildEasyText())}
+                  >
+                    {t.builder.refresh}
+                  </Button>
+                </div>
               </div>
               <div className="mt-3 space-y-2">
                 <Textarea
@@ -884,25 +896,23 @@ export const ConversationBuilder = () => {
                   }}
                   placeholder={
                     isSubTab
-                      ? `< ${activeParticipant?.name ?? "You"} message\n> ${receiverParticipant?.name ?? "Them"} message [delay=1.5]\n> Return message [return]`
-                      : `< ${activeParticipant?.name ?? "Sender"} message\n> ${receiverParticipant?.name ?? "Receiver"} message\nSarah: hi, joining the chat\n> Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram link="Sarah"]`
+                      ? `${activeParticipant?.name ?? "You"}: message\n${receiverParticipant?.name ?? "Them"}: message [delay=1.5]\n${activeParticipant?.name ?? "You"}: Return message [return]`
+                      : `${activeParticipant?.name ?? "Sender"}: message\n${receiverParticipant?.name ?? "Receiver"}: message\nSarah: hi, joining the chat\n${receiverParticipant?.name ?? "Receiver"}: Delivery update [notification clickable auto=1.5 opens=0.7 as="Sarah" app=Instagram link="Sarah"]`
                   }
                   className="min-h-[280px] resize-y font-mono"
                 />
                 <div className="space-y-1 text-xs text-slate-500">
                   {isSubTab ? (
                     <p>
-                      <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "You"},{" "}
-                      <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Them"} - this
-                      is just the two of you, so no other names or <span className="font-mono">link=</span> here.
+                      Start every line with <span className="font-semibold">Name:</span> - either{" "}
+                      {activeParticipant?.name ?? "you"} or {receiverParticipant?.name ?? "them"} - it's
+                      just the two of you, so no other names or <span className="font-mono">link=</span> here.
                       Add <span className="font-mono">[return]</span> to a line to have playback jump back to
                       the main conversation right after that message.
                     </p>
                   ) : (
                     <p>
-                      <span className="font-semibold">&lt;</span> = {activeParticipant?.name ?? "Sender"},{" "}
-                      <span className="font-semibold">&gt;</span> = {receiverParticipant?.name ?? "Receiver"},{" "}
-                      <span className="font-semibold">Name:</span>{t.builder.easyHelpNameNote}
+                      Start every line with <span className="font-semibold">Name:</span>{t.builder.easyHelpNameNote}
                     </p>
                   )}
                   <p>
@@ -924,7 +934,7 @@ export const ConversationBuilder = () => {
                     <span className="font-mono">link="Name"</span> (opens a separate chat with
                     that person when tapped - auto-creates them if new). Example:{" "}
                     <span className="font-mono">
-                      &gt; New message [notification clickable auto=1.5 as="Sarah" link="Sarah"]
+                      {receiverParticipant?.name ?? "Receiver"}: New message [notification clickable auto=1.5 as="Sarah" link="Sarah"]
                     </span>
                   </p>
                 </div>
