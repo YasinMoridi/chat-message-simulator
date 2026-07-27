@@ -4,6 +4,8 @@ import {
   DEFAULT_MESSAGE_DELAY_MS,
   DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
   DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
+  DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS,
+  DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS,
 } from "@/types/message"
 import type { Participant } from "@/types/conversation"
 import { useConversationStore } from "@/store/conversationStore"
@@ -64,6 +66,7 @@ interface MessageFormProps {
     notificationAutoOpenDelayMs?: number
     linkedParticipantId?: string
     returnToParent?: boolean
+    backNavigation?: Message["backNavigation"]
   }) => void
   onCancel?: () => void
 }
@@ -143,6 +146,21 @@ export const MessageForm = ({
   )
   const [linkedParticipantId, setLinkedParticipantId] = useState(initial?.linkedParticipantId ?? "")
   const [returnToParent, setReturnToParent] = useState(initial?.returnToParent ?? false)
+  const [backNavigationEnabled, setBackNavigationEnabled] = useState(
+    initial?.backNavigation?.enabled ?? false,
+  )
+  const [backNavigationAutoOpenEnabled, setBackNavigationAutoOpenEnabled] = useState(
+    initial?.backNavigation?.autoOpen ?? false,
+  )
+  const [backNavigationAutoOpenDelaySeconds, setBackNavigationAutoOpenDelaySeconds] = useState(
+    (initial?.backNavigation?.autoOpenDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS) / 1000,
+  )
+  const [backNavigationAutoSelectParticipantId, setBackNavigationAutoSelectParticipantId] = useState(
+    initial?.backNavigation?.autoSelectParticipantId ?? "",
+  )
+  const [backNavigationAutoSelectDelaySeconds, setBackNavigationAutoSelectDelaySeconds] = useState(
+    (initial?.backNavigation?.autoSelectDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS) / 1000,
+  )
   const showAdvanced = advancedOpen ?? true
   const showAdvancedToggle = typeof advancedOpen === "boolean" && typeof onToggleAdvanced === "function"
   const previousDefaultRef = useRef(defaultSenderId)
@@ -300,6 +318,22 @@ export const MessageForm = ({
           ? linkedParticipantId || undefined
           : undefined,
       returnToParent: isSubMessage ? returnToParent : undefined,
+      backNavigation: backNavigationEnabled
+        ? {
+            enabled: true,
+            autoOpen: backNavigationAutoOpenEnabled,
+            autoOpenDelayMs: backNavigationAutoOpenEnabled
+              ? Math.round(Math.max(0, backNavigationAutoOpenDelaySeconds) * 1000)
+              : undefined,
+            autoSelectParticipantId: backNavigationAutoOpenEnabled
+              ? backNavigationAutoSelectParticipantId || undefined
+              : undefined,
+            autoSelectDelayMs:
+              backNavigationAutoOpenEnabled && backNavigationAutoSelectParticipantId
+                ? Math.round(Math.max(0, backNavigationAutoSelectDelaySeconds) * 1000)
+                : undefined,
+          }
+        : { enabled: false },
     })
     if (resetOnSubmit && !initial) {
       setContent("")
@@ -318,6 +352,11 @@ export const MessageForm = ({
       setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
       setLinkedParticipantId("")
       setReturnToParent(false)
+      setBackNavigationEnabled(false)
+      setBackNavigationAutoOpenEnabled(false)
+      setBackNavigationAutoOpenDelaySeconds(DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS / 1000)
+      setBackNavigationAutoSelectParticipantId("")
+      setBackNavigationAutoSelectDelaySeconds(DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS / 1000)
     }
   }
 
@@ -500,6 +539,92 @@ export const MessageForm = ({
               <Switch checked={returnToParent} onCheckedChange={setReturnToParent} />
             </div>
           ) : null}
+
+          <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="space-y-0.5">
+                <Label>{t.messageForm.backButtonOpensHome}</Label>
+                <p className="text-[11px] text-slate-500">{t.messageForm.backButtonOpensHomeHint}</p>
+              </div>
+              <Switch checked={backNavigationEnabled} onCheckedChange={setBackNavigationEnabled} />
+            </div>
+            {backNavigationEnabled ? (
+              <>
+                <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                  <div className="space-y-0.5">
+                    <Label>{t.messageForm.backNavigationAutoOpen}</Label>
+                    <p className="text-[11px] text-slate-500">{t.messageForm.backNavigationAutoOpenHint}</p>
+                  </div>
+                  <Switch
+                    checked={backNavigationAutoOpenEnabled}
+                    onCheckedChange={setBackNavigationAutoOpenEnabled}
+                  />
+                </div>
+                {backNavigationAutoOpenEnabled ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label>{t.messageForm.backNavigationAutoOpenAfter}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={backNavigationAutoOpenDelaySeconds}
+                        onChange={(event) =>
+                          setBackNavigationAutoOpenDelaySeconds(Number(event.target.value))
+                        }
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        {t.messageForm.backNavigationAutoOpenAfterHint}
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>{t.messageForm.backNavigationAutoSelect}</Label>
+                      <Select
+                        value={backNavigationAutoSelectParticipantId || "__none__"}
+                        onValueChange={(value) =>
+                          setBackNavigationAutoSelectParticipantId(value === "__none__" ? "" : value)
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={t.messageForm.backNavigationAutoSelectNone} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none__">
+                            {t.messageForm.backNavigationAutoSelectNone}
+                          </SelectItem>
+                          {roster.map((participant) => (
+                            <SelectItem key={participant.id} value={participant.id}>
+                              {participant.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-slate-500">
+                        {t.messageForm.backNavigationAutoSelectHint}
+                      </p>
+                    </div>
+                    {backNavigationAutoSelectParticipantId ? (
+                      <div className="space-y-2">
+                        <Label>{t.messageForm.backNavigationAutoSelectAfter}</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={backNavigationAutoSelectDelaySeconds}
+                          onChange={(event) =>
+                            setBackNavigationAutoSelectDelaySeconds(Number(event.target.value))
+                          }
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          {t.messageForm.backNavigationAutoSelectAfterHint}
+                        </p>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </>
+            ) : null}
+          </div>
 
           {type === "notification" ? (
             <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3">

@@ -1,8 +1,9 @@
-import type { Conversation } from "@/types/conversation"
+import type { Conversation, Participant } from "@/types/conversation"
 import type { LayoutConfig, LayoutId, LayoutTheme } from "@/types/layout"
 import { ChatHeader } from "@/components/chat/ChatHeader"
 import { ConversationView } from "@/components/chat/ConversationView"
 import { MessageInput } from "@/components/chat/MessageInput"
+import { ChatListScreen, type ChatListPreview } from "@/components/chat/ChatListScreen"
 import { getConversationMembers, getConversationTitle } from "@/utils/helpers"
 
 interface ChatLayoutProps {
@@ -28,6 +29,23 @@ interface ChatLayoutProps {
    * happening right now.
    */
   typingDraftText?: string | null
+  /**
+   * "chat" (default) renders the normal chat screen. "home" renders the
+   * simulated recent-chats list a message's backNavigation sends playback
+   * to instead - every other prop below this one is only used in that mode.
+   */
+  screen?: "chat" | "home"
+  /** Contacts to list on the home screen - normally every participant except "you". */
+  homeParticipants?: Participant[]
+  /** Last-message preview per participant id, for the home screen's rows. */
+  homePreviews?: Record<string, ChatListPreview>
+  /** Called with a participant id when their row is tapped on the home screen. */
+  onSelectHomeParticipant?: (participantId: string) => void
+  /**
+   * Called when the chat screen's back arrow is tapped. Only wired up when
+   * the currently-shown message has backNavigation.enabled.
+   */
+  onBack?: () => void
 }
 
 const groupStatusLabel = (participants: Conversation["participants"]) => {
@@ -80,6 +98,11 @@ export const ChatLayout = ({
   typingSenderId,
   typingPhaseMs,
   typingDraftText,
+  screen = "chat",
+  homeParticipants = [],
+  homePreviews,
+  onSelectHomeParticipant,
+  onBack,
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
@@ -139,33 +162,45 @@ export const ChatLayout = ({
         />
       ) : null}
       {theme.pattern ? <div className="chat-layer chat-bg-pattern" aria-hidden="true" /> : null}
-      {showChrome ? (
-        <ChatHeader
-          title={title}
-          subtitle={subtitle}
-          avatarUrl={!isGroup ? headerParticipant?.avatarUrl : undefined}
-          avatarFallback={!isGroup ? headerParticipant?.name : title}
-          isVerified={!isGroup ? headerParticipant?.isVerified : undefined}
-          layout={layout}
+      {screen === "home" ? (
+        <ChatListScreen
+          participants={homeParticipants}
+          previews={homePreviews}
           theme={theme}
+          onSelectParticipant={onSelectHomeParticipant ?? (() => {})}
         />
-      ) : null}
-      <div className="relative flex-1 min-h-0">
-        <ConversationView
-          messages={conversation.messages}
-          participants={members}
-          layout={layout}
-          selfId={selfId}
-          mode={conversationMode}
-          containerRef={conversationContainerRef}
-          contentRef={conversationContentRef}
-          typingSenderId={isSelfTypingLive ? null : typingSenderId}
-          typingPhaseMs={typingPhaseMs}
-        />
-      </div>
-      {showChrome ? (
-        <MessageInput layout={layout} typingText={isSelfTypingLive ? typingDraftText : null} />
-      ) : null}
+      ) : (
+        <>
+          {showChrome ? (
+            <ChatHeader
+              title={title}
+              subtitle={subtitle}
+              avatarUrl={!isGroup ? headerParticipant?.avatarUrl : undefined}
+              avatarFallback={!isGroup ? headerParticipant?.name : title}
+              isVerified={!isGroup ? headerParticipant?.isVerified : undefined}
+              layout={layout}
+              theme={theme}
+              onBack={onBack}
+            />
+          ) : null}
+          <div className="relative flex-1 min-h-0">
+            <ConversationView
+              messages={conversation.messages}
+              participants={members}
+              layout={layout}
+              selfId={selfId}
+              mode={conversationMode}
+              containerRef={conversationContainerRef}
+              contentRef={conversationContentRef}
+              typingSenderId={isSelfTypingLive ? null : typingSenderId}
+              typingPhaseMs={typingPhaseMs}
+            />
+          </div>
+          {showChrome ? (
+            <MessageInput layout={layout} typingText={isSelfTypingLive ? typingDraftText : null} />
+          ) : null}
+        </>
+      )}
     </div>
   )
 }

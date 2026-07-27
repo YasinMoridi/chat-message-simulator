@@ -125,6 +125,7 @@ interface ConversationStore {
     notificationAutoOpenDelayMs?: number
     linkedParticipantId?: string
     returnToParent?: boolean
+    backNavigation?: Message["backNavigation"]
   }) => void
   updateMessage: (messageId: string, updates: Partial<Message>) => void
   deleteMessage: (messageId: string) => void
@@ -150,6 +151,7 @@ interface ConversationStore {
       notificationAutoOpenDelayMs?: number
       linkedParticipantId?: string
       returnToParent?: boolean
+      backNavigation?: Message["backNavigation"]
     },
   ) => void
   updateSubConversationMessage: (

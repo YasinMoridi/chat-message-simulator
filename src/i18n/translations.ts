@@ -159,6 +159,22 @@ export const translations = {
       statusRead: "Read",
       revealDelay: "Reveal delay (seconds)",
       revealDelayHint: "Time this waits after the previous entry before it appears during playback.",
+      backButtonOpensHome: "Back button opens home screen",
+      backButtonOpensHomeHint:
+        "Once this message is the last one shown, tapping the header's back button leaves this chat for a simulated chat-list home screen instead of doing nothing.",
+      backNavigationAutoOpen: "Go there automatically (no tap needed)",
+      backNavigationAutoOpenHint:
+        "Once this message finishes, it leaves this chat for the home screen by itself after the delay below - nobody has to tap the back button, live or recorded.",
+      backNavigationAutoOpenAfter: "Leaves after (seconds)",
+      backNavigationAutoOpenAfterHint:
+        "How long after this message finishes before it automatically leaves for the home screen.",
+      backNavigationAutoSelect: "Then open chat with",
+      backNavigationAutoSelectNone: "No auto-selection (just show the home screen)",
+      backNavigationAutoSelectHint:
+        "Once the home screen appears, this contact's row is tapped automatically instead of waiting for a real tap.",
+      backNavigationAutoSelectAfter: "Opens after (seconds)",
+      backNavigationAutoSelectAfterHint:
+        "How long the home screen sits there before it automatically opens the chat with that contact.",
       showDifferentNameApp: "Show as a different name/app",
       showDifferentNameAppHint:
         "By default the notification uses the Sender above. Turn this on to display a different name, app, or avatar instead.",
@@ -395,6 +411,21 @@ export const translations = {
       statusRead: "خونده‌شده",
       revealDelay: "تاخیر نمایش (ثانیه)",
       revealDelayHint: "مدتی که این پیام بعد از پیام قبلی، قبل از ظاهر شدن توی پخش، صبر می‌کنه.",
+      backButtonOpensHome: "دکمه‌ی بازگشت، صفحه‌ی هوم رو باز می‌کنه",
+      backButtonOpensHomeHint:
+        "وقتی این پیام آخرین پیام نمایش داده‌شده باشه، با زدن دکمه‌ی بازگشت توی هدر، به‌جای هیچ‌کاری، از این چت خارج می‌شی و یه صفحه‌ی شبیه‌سازی‌شده از لیست چت‌ها (هوم) نشون داده می‌شه.",
+      backNavigationAutoOpen: "خودکار برو اونجا (بدون نیاز به تپ)",
+      backNavigationAutoOpenHint:
+        "به محض تموم شدن این پیام، بعد از تاخیر پایین، خودش از این چت خارج می‌شه و می‌ره به صفحه‌ی هوم - نه توی پخش زنده و نه ضبط‌شده نیازی به زدن دکمه‌ی بازگشت نیست.",
+      backNavigationAutoOpenAfter: "بعد از (ثانیه) خارج می‌شه",
+      backNavigationAutoOpenAfterHint: "چقدر بعد از تموم شدن این پیام، خودکار می‌ره به صفحه‌ی هوم.",
+      backNavigationAutoSelect: "بعدش این چت رو باز کن با",
+      backNavigationAutoSelectNone: "بدون انتخاب خودکار (فقط صفحه‌ی هوم نشون داده بشه)",
+      backNavigationAutoSelectHint:
+        "به محض ظاهر شدن صفحه‌ی هوم، روی ردیف این شخص خودکار تپ می‌شه، به‌جای اینکه منتظر یه تپ واقعی بمونه.",
+      backNavigationAutoSelectAfter: "بعد از (ثانیه) باز می‌شه",
+      backNavigationAutoSelectAfterHint:
+        "چقدر صفحه‌ی هوم بمونه قبل از اینکه خودکار چت با اون شخص رو باز کنه.",
       showDifferentNameApp: "نمایش با اسم/اپ متفاوت",
       showDifferentNameAppHint:
         "به‌طور پیش‌فرض نوتیف از همون فرستنده‌ی بالا استفاده می‌کنه. این رو فعال کن تا یه اسم، اپ یا آواتار متفاوت نشون داده بشه.",

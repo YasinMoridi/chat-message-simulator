@@ -71,6 +71,48 @@ export interface Message {
    * that side-chat once its messages run out.
    */
   returnToParent?: boolean
+  /**
+   * Lets tapping the chat header's back button - while this is the last
+   * message currently shown, in the main conversation or a linked
+   * side-chat - leave this chat for a simulated "recent chats" home
+   * screen instead of doing nothing, mimicking backing out of a chat on a
+   * real phone. Tapping a contact on that home screen opens a real,
+   * separate chat with them, built from their entry in
+   * conversation.subConversations - same mechanism a clickable
+   * notification uses.
+   */
+  backNavigation?: {
+    enabled: boolean
+    /**
+     * When true, nobody has to actually tap the back button during
+     * playback - once this message finishes being the last one shown, it
+     * "backs out" to the home screen by itself after autoOpenDelayMs,
+     * live or recorded. When false/unset, the back button still works
+     * (as long as enabled is true) but nothing happens on its own.
+     */
+    autoOpen?: boolean
+    /**
+     * Only meaningful when autoOpen is true. How long (in milliseconds)
+     * after this message finishes before it automatically leaves for the
+     * home screen.
+     */
+    autoOpenDelayMs?: number
+    /**
+     * Only meaningful when autoOpen is true. Id of the participant whose
+     * row on the home screen should be "tapped" automatically - after
+     * autoSelectDelayMs once the home screen appears - opening a real,
+     * separate chat with them instead of waiting for a real tap. Leave
+     * unset to have the home screen just sit there until someone taps a
+     * contact themselves.
+     */
+    autoSelectParticipantId?: string
+    /**
+     * Only meaningful when autoSelectParticipantId is set. How long (in
+     * milliseconds) after the home screen appears before it auto-taps
+     * that contact's row.
+     */
+    autoSelectDelayMs?: number
+  }
 }
 
 /**
@@ -93,6 +135,7 @@ export interface MessageDraftPayload {
   notificationAutoOpenDelayMs?: number
   linkedParticipantId?: string
   returnToParent?: boolean
+  backNavigation?: Message["backNavigation"]
 }
 
 /** Default delay (ms) applied to a message when none is set. */
@@ -101,6 +144,10 @@ export const DEFAULT_MESSAGE_DELAY_MS = 1200
 export const DEFAULT_NOTIFICATION_OPEN_DELAY_MS = 700
 /** Default wait (ms) after a clickable notification appears before it auto-taps itself. */
 export const DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS = 1500
+/** Default wait (ms) after a message finishes before backNavigation.autoOpen leaves for the home screen. */
+export const DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS = 900
+/** Default wait (ms) after the home screen appears before backNavigation.autoSelectParticipantId auto-taps a contact. */
+export const DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS = 900
 
 /**
  * A message that hasn't been added yet - mirrors what's currently typed in

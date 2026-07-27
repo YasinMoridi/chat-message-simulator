@@ -18,8 +18,16 @@ interface UseConversationPlaybackOptions {
   subConversations?: Record<string, Message[]>
 }
 
-/** Which chat is currently being animated/shown. */
-export type ActiveThread = { kind: "main" } | { kind: "sub"; participantId: string }
+/**
+ * Which chat is currently being animated/shown. "home" is the simulated
+ * chat-list screen a message's backNavigation can send playback to - it
+ * never advances on its own, it just sits there until a contact is tapped
+ * (openFromHome) or the user steps back in history.
+ */
+export type ActiveThread =
+  | { kind: "main" }
+  | { kind: "sub"; participantId: string }
+  | { kind: "home" }
 
 /** A single point in the playback timeline - used to step back/forward. */
 interface HistorySnapshot {
@@ -331,6 +339,13 @@ export const useConversationPlayback = (
   }
 
   const advance = (thread: ActiveThread, index: number) => {
+    if (thread.kind === "home") {
+      // The home screen never plays anything by itself - it just waits
+      // for a contact to be tapped (openFromHome).
+      setIsPlaying(false)
+      setIsPaused(false)
+      return
+    }
     const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
     if (index >= msgs.length) {
       setIsPlaying(false)
@@ -531,6 +546,11 @@ export const useConversationPlayback = (
   // reveals message `index` of `thread` and applies whatever branch it
   // triggers (opening a linked side-chat, or returning from one).
   const revealNextLive = (thread: ActiveThread, index: number) => {
+    if (thread.kind === "home") {
+      setIsPlaying(false)
+      setIsPaused(false)
+      return
+    }
     const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
     if (index >= msgs.length) {
       setIsPlaying(false)
@@ -590,6 +610,8 @@ export const useConversationPlayback = (
       return
     }
 
+    if (activeThread.kind === "home") return
+
     freezeForManualStep()
     const thread = activeThread
     const idx = thread.kind === "main" ? revealCount : subRevealCount
@@ -626,6 +648,49 @@ export const useConversationPlayback = (
     setSubRevealCount(0)
     pushHistory({ thread: { kind: "sub", participantId }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
     advance({ kind: "sub", participantId }, 0)
+  }
+
+  // Leaves whichever chat is currently open (main or a side-chat) for the
+  // simulated home screen - triggered when the currently-last-shown
+  // message has backNavigation.enabled and the header's back button is
+  // tapped. If we're backing out of the main thread, remember where it
+  // paused so a later returnToParent (from a chat opened off the home
+  // screen) can still resume it right where it left off.
+  const goHome = () => {
+    clearPendingTimeout()
+    clearKeystrokeInterval()
+    dismissBanner()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
+    if (activeThread.kind === "main") {
+      pendingMainResumeIndexRef.current = revealCount
+    }
+    setTypingSenderId(null)
+    setTypingDraftText(null)
+    setIsPaused(false)
+    setActiveThread({ kind: "home" })
+    setSubRevealCount(0)
+    pushHistory({ thread: { kind: "home" }, revealCount, subRevealCount: 0 })
+  }
+
+  // Tapping a contact on the home screen: opens a real, separate chat with
+  // them (their entry in conversation.subConversations) - same mechanism a
+  // clickable, linked notification uses.
+  const openFromHome = (participantId: string) => {
+    clearPendingTimeout()
+    clearKeystrokeInterval()
+    dismissBanner()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
+    setIsPaused(false)
+    setActiveThread({ kind: "sub", participantId })
+    setSubRevealCount(0)
+    pushHistory({ thread: { kind: "sub", participantId }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
+    if (isPlaying) {
+      advance({ kind: "sub", participantId }, 0)
+    }
   }
 
   useEffect(
@@ -676,5 +741,9 @@ export const useConversationPlayback = (
     subRevealCount,
     /** Opens (and starts playing) the side-chat linked to a tapped notification. */
     openLinkedConversation,
+    /** Leaves the currently open chat for the simulated home (chat list) screen. */
+    goHome,
+    /** Opens the side-chat for a contact tapped on the home screen. */
+    openFromHome,
   }
 }

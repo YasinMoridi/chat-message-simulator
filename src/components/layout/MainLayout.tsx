@@ -26,6 +26,8 @@ import {
   DRAFT_MESSAGE_ID,
   DEFAULT_NOTIFICATION_OPEN_DELAY_MS,
   DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS,
+  DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS,
+  DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS,
 } from "@/types/message"
 import { ChatLayout, getSelfParticipantId } from "@/components/layout/ChatLayout"
 import {
@@ -133,6 +135,8 @@ export const MainLayout = () => {
     activeThread,
     subRevealCount,
     openLinkedConversation,
+    goHome,
+    openFromHome,
   } = useConversationPlayback(visiblePlaybackMessages, { selfId, subConversations: subConversationsForPlayback })
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
@@ -143,6 +147,18 @@ export const MainLayout = () => {
   // from bannerOpenTimeoutRef, which times the press-to-open beat that
   // follows once a tap (real or simulated) has actually happened.
   const bannerAutoTapTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Times the "leave for home automatically" beat for a message whose
+  // backNavigation.autoOpen is set - separate from the banner timers above,
+  // since this fires off the currently-shown message finishing, not a tap.
+  const backNavigationAutoOpenTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Times the "auto-tap this contact" beat once the home screen (reached
+  // via backNavigation.autoOpen) is actually showing.
+  const backNavigationAutoSelectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Which contact (and after how long) should be auto-selected once we
+  // land on the home screen - captured at the moment we decide to leave
+  // for home, since by the time we're actually there `lastShownMessage`
+  // no longer points at the message that configured this.
+  const pendingHomeAutoSelectRef = useRef<{ participantId: string; delayMs: number } | null>(null)
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
   // While composing a new message, mirror it as a live bubble at the end of the preview.
   const draftPreviewMessage: Message | null = useMemo(() => {
@@ -210,6 +226,129 @@ export const MainLayout = () => {
     subRevealCount,
     selfId,
   ])
+
+  // Whichever message is currently the last one shown, in whichever chat
+  // (main or an open side-chat) is currently on screen - the one whose
+  // backNavigation decides what tapping the header's back button does.
+  const currentThreadMessages =
+    activeThread.kind === "sub"
+      ? (subConversationsForPlayback[activeThread.participantId] ?? []).slice(0, subRevealCount)
+      : isPlaying
+        ? visiblePlaybackMessages.slice(0, revealCount)
+        : conversation.messages.filter((message) => !message.isHidden)
+  const lastShownMessage = currentThreadMessages[currentThreadMessages.length - 1]
+  const canGoHome = activeThread.kind !== "home" && Boolean(lastShownMessage?.backNavigation?.enabled)
+  const handleBack = () => {
+    if (canGoHome) goHome()
+  }
+
+  // For a message whose backNavigation.autoOpen is set, nobody has to tap
+  // the back button: once it's the last one shown (and playback isn't
+  // paused/stopped), this schedules the same "leave for home" beat
+  // handleBack would run for a real tap, after the configured delay. If
+  // that message also names an autoSelectParticipantId, remember it here
+  // so the effect below can auto-tap that contact once we actually land
+  // on the home screen.
+  useEffect(() => {
+    if (backNavigationAutoOpenTimeoutRef.current) {
+      clearTimeout(backNavigationAutoOpenTimeoutRef.current)
+      backNavigationAutoOpenTimeoutRef.current = null
+    }
+    const backNav = lastShownMessage?.backNavigation
+    if (!isPlaying || isPaused || !canGoHome || !backNav?.autoOpen) return
+    const delay = backNav.autoOpenDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS
+    const autoSelectParticipantId = backNav.autoSelectParticipantId
+    const autoSelectDelayMs = backNav.autoSelectDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS
+    backNavigationAutoOpenTimeoutRef.current = setTimeout(() => {
+      backNavigationAutoOpenTimeoutRef.current = null
+      pendingHomeAutoSelectRef.current = autoSelectParticipantId
+        ? { participantId: autoSelectParticipantId, delayMs: autoSelectDelayMs }
+        : null
+      goHome()
+    }, delay)
+    return () => {
+      if (backNavigationAutoOpenTimeoutRef.current) {
+        clearTimeout(backNavigationAutoOpenTimeoutRef.current)
+        backNavigationAutoOpenTimeoutRef.current = null
+      }
+    }
+    // goHome is intentionally omitted - it's a fresh closure every render,
+    // and including it would clear/reschedule this timer on every render
+    // instead of once per message, so autoOpen would never actually fire.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, isPaused, canGoHome, lastShownMessage])
+
+  // Once the home screen (reached via backNavigation.autoOpen) is actually
+  // showing, auto-tap whichever contact was configured on the message that
+  // sent us here - opening their real, separate chat the same way a live
+  // tap on their row would.
+  useEffect(() => {
+    if (backNavigationAutoSelectTimeoutRef.current) {
+      clearTimeout(backNavigationAutoSelectTimeoutRef.current)
+      backNavigationAutoSelectTimeoutRef.current = null
+    }
+    if (activeThread.kind !== "home") return
+    const pending = pendingHomeAutoSelectRef.current
+    if (!pending) return
+    pendingHomeAutoSelectRef.current = null
+    backNavigationAutoSelectTimeoutRef.current = setTimeout(() => {
+      backNavigationAutoSelectTimeoutRef.current = null
+      openFromHome(pending.participantId)
+    }, pending.delayMs)
+    return () => {
+      if (backNavigationAutoSelectTimeoutRef.current) {
+        clearTimeout(backNavigationAutoSelectTimeoutRef.current)
+        backNavigationAutoSelectTimeoutRef.current = null
+      }
+    }
+    // openFromHome is intentionally omitted for the same reason as goHome
+    // above - it's a fresh closure every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThread.kind])
+
+  // If playback stops some other way while an auto-open/auto-select beat
+  // is still pending, don't leave a stale timer or selection queued for
+  // next time playback starts.
+  useEffect(() => {
+    if (isPlaying) return
+    if (backNavigationAutoOpenTimeoutRef.current) {
+      clearTimeout(backNavigationAutoOpenTimeoutRef.current)
+      backNavigationAutoOpenTimeoutRef.current = null
+    }
+    if (backNavigationAutoSelectTimeoutRef.current) {
+      clearTimeout(backNavigationAutoSelectTimeoutRef.current)
+      backNavigationAutoSelectTimeoutRef.current = null
+    }
+    pendingHomeAutoSelectRef.current = null
+  }, [isPlaying])
+
+  useEffect(() => {
+    return () => {
+      if (backNavigationAutoOpenTimeoutRef.current) {
+        clearTimeout(backNavigationAutoOpenTimeoutRef.current)
+      }
+      if (backNavigationAutoSelectTimeoutRef.current) {
+        clearTimeout(backNavigationAutoSelectTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // Everyone in the roster except "you" - the contacts listed on the
+  // simulated home screen.
+  const homeParticipants = conversation.participants.filter((participant) => participant.id !== selfId)
+  const homePreviews = useMemo(() => {
+    const map: Record<string, { text: string; timestamp?: string }> = {}
+    for (const thread of conversation.subConversations ?? []) {
+      const visible = thread.messages.filter((message) => !message.isHidden)
+      const last = visible[visible.length - 1]
+      if (!last) continue
+      map[thread.participantId] = {
+        text: last.type === "image" ? "Sent a photo" : last.content,
+        timestamp: last.timestamp,
+      }
+    }
+    return map
+  }, [conversation.subConversations])
 
   const handleQuickExport = async (mode: "download" | "preview") => {
     const target = exportSettings.captureMode === "full" ? fullExportRef.current : exportRef.current
@@ -836,6 +975,11 @@ export const MainLayout = () => {
                             conversationContentRef={previewConversationContentRef}
                             typingSenderId={typingSenderId}
                             typingDraftText={typingDraftText}
+                            screen={activeThread.kind === "home" ? "home" : "chat"}
+                            homeParticipants={homeParticipants}
+                            homePreviews={homePreviews}
+                            onSelectHomeParticipant={openFromHome}
+                            onBack={canGoHome ? handleBack : undefined}
                           />
                           {ui.showNotificationBanner && bannerMessage ? (
                             <NotificationBanner

@@ -22,6 +22,12 @@ interface ChatHeaderProps {
   isVerified?: boolean
   layout: LayoutConfig
   theme: LayoutTheme
+  /**
+   * Called when the back arrow is tapped. Left undefined for a
+   * decorative, non-interactive back arrow (the default outside of the
+   * live/preview playback where backNavigation applies).
+   */
+  onBack?: () => void
 }
 
 export const ChatHeader = ({
@@ -32,6 +38,7 @@ export const ChatHeader = ({
   isVerified,
   layout,
   theme,
+  onBack,
 }: ChatHeaderProps) => {
   const isWhatsApp = layout.id === "whatsapp"
   const isIMessage = layout.id === "imessage"
@@ -164,7 +171,7 @@ export const ChatHeader = ({
       {isIMessage ? (
         <>
           <div className="grid w-full grid-cols-[auto_1fr_auto] items-center">
-            <Button size="icon" variant="ghost" className={iconButtonClass}>
+            <Button size="icon" variant="ghost" className={iconButtonClass} onClick={onBack}>
               <BackIcon className={iconClass} />
             </Button>
             <div className="flex flex-col items-center gap-1 justify-self-center">
@@ -206,7 +213,7 @@ export const ChatHeader = ({
                       : "gap-3",
           )}
         >
-          <Button size="icon" variant="ghost" className={iconButtonClass}>
+          <Button size="icon" variant="ghost" className={iconButtonClass} onClick={onBack}>
             <BackIcon className={iconClass} />
           </Button>
             {avatarNode}
