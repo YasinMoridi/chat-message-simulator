@@ -22,6 +22,23 @@ export interface ExportSettings {
 
 export type AppLanguage = "en" | "fa"
 
+/**
+ * Which fields a bulk-edit pass should touch. Every field is opt-in - only
+ * the ones present get applied, so the panel can flip on just "date" or
+ * just "status" without disturbing the rest of each message.
+ */
+export interface BulkMessageUpdate {
+  /** "YYYY-MM-DD" - replaces the date portion of every affected message's timestamp. */
+  date?: string
+  /** When true (default), each message keeps its own time-of-day; only the date changes. */
+  keepTimeOfDay?: boolean
+  senderId?: string
+  status?: MessageStatus
+  delayMs?: number
+  /** Also apply the same changes to every side-conversation's messages. */
+  includeSubConversations?: boolean
+}
+
 export interface UiState {
   activeView: "editor" | "preview"
   showChrome: boolean
@@ -113,6 +130,8 @@ interface ConversationStore {
   deleteMessage: (messageId: string) => void
   duplicateMessage: (messageId: string) => void
   setMessages: (messages: Message[]) => void
+  /** Applies the same change(s) - date, sender, status, delay - across every message at once. */
+  bulkUpdateMessages: (updates: BulkMessageUpdate) => void
   /** Adds a message to the side-chat with `participantId`, creating that side-chat first if needed. */
   addSubConversationMessage: (
     participantId: string,
@@ -331,6 +350,33 @@ const defaultUiState: UiState = {
 }
 
 const STORAGE_KEY = "chat-sim-storage"
+/** Applies the enabled fields of a BulkMessageUpdate to a single message. */
+const applyBulkUpdate = (message: Message, updates: BulkMessageUpdate): Message => {
+  let next = message
+  if (updates.date) {
+    const [year, month, day] = updates.date.split("-").map(Number)
+    if (!Number.isNaN(year) && !Number.isNaN(month) && !Number.isNaN(day)) {
+      const original = new Date(message.timestamp)
+      const nextDate = new Date(original)
+      nextDate.setFullYear(year, month - 1, day)
+      if (updates.keepTimeOfDay === false) {
+        nextDate.setHours(0, 0, 0, 0)
+      }
+      next = { ...next, timestamp: nextDate.toISOString() }
+    }
+  }
+  if (updates.senderId) {
+    next = { ...next, senderId: updates.senderId }
+  }
+  if (updates.status) {
+    next = { ...next, status: updates.status }
+  }
+  if (updates.delayMs !== undefined) {
+    next = { ...next, delayMs: updates.delayMs }
+  }
+  return next
+}
+
 const HISTORY_LIMIT = 3
 
 const buildSnapshot = (state: ConversationStore): Snapshot => ({
@@ -590,6 +636,27 @@ export const useConversationStore = create<ConversationStore>()(
           },
           history: pushHistory(state),
         })),
+      bulkUpdateMessages: (updates) =>
+        set((state) => {
+          const messages = state.conversation.messages.map((message) =>
+            applyBulkUpdate(message, updates),
+          )
+          const subConversations = updates.includeSubConversations
+            ? (state.conversation.subConversations ?? []).map((entry) => ({
+                ...entry,
+                messages: entry.messages.map((message) => applyBulkUpdate(message, updates)),
+              }))
+            : state.conversation.subConversations
+          return {
+            conversation: {
+              ...state.conversation,
+              messages,
+              subConversations,
+              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
+            },
+            history: pushHistory(state),
+          }
+        }),
       addSubConversationMessage: (participantId, payload) =>
         set((state) => {
           const existing = state.conversation.subConversations ?? []

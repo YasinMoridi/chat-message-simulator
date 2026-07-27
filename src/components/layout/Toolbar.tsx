@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useTranslation } from "@/i18n/useTranslation"
+import { BulkEditPanel } from "@/components/editor/BulkEditPanel"
 import {
   Dialog,
   DialogContent,
@@ -206,6 +207,8 @@ export const Toolbar = () => {
               <TooltipContent>{t.toolbar.redoTooltip}</TooltipContent>
             </Tooltip>
           </div>
+
+          <BulkEditPanel />
 
           <Dialog open={isActionsOpen} onOpenChange={setIsActionsOpen}>
             <DialogTrigger asChild>

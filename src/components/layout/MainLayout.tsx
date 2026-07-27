@@ -441,6 +441,14 @@ export const MainLayout = () => {
     })
   }
 
+  // Auto-scroll the preview to the newest message as playback reveals more
+  // of the thread (main conversation or an open side-chat), so the phone
+  // behaves like a real chat app instead of staying pinned at the top.
+  useEffect(() => {
+    if (!isPlaying) return
+    requestAnimationFrame(() => scrollPreviewConversation("bottom"))
+  }, [isPlaying, revealCount, subRevealCount, activeThread])
+
   // Tapping a clickable notification banner mimics opening a real OS
   // notification: after a short configurable delay, it reveals the full
   // chat (stopping the "..." playback right there) and scrolls to the new
