@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { VerifiedBadge } from "@/components/ui/verified-badge"
 import { cn } from "@/utils/cn"
-import { readFileAsDataUrl } from "@/utils/helpers"
+import { readImageAsCompressedDataUrl } from "@/utils/helpers"
 import { useTranslation } from "@/i18n/useTranslation"
 
 const emptyParticipant = {
@@ -54,7 +54,7 @@ export const ParticipantManager = () => {
     }
     setError(null)
     try {
-      const dataUrl = await readFileAsDataUrl(file)
+      const dataUrl = await readImageAsCompressedDataUrl(file)
       updateParticipant(participantId, { avatarUrl: dataUrl })
     } catch (error) {
       console.error("Failed to read avatar file", error)
@@ -70,7 +70,7 @@ export const ParticipantManager = () => {
     }
     setError(null)
     try {
-      const dataUrl = await readFileAsDataUrl(file)
+      const dataUrl = await readImageAsCompressedDataUrl(file)
       setDraft((prev) => ({ ...prev, avatarUrl: dataUrl }))
     } catch (error) {
       console.error("Failed to read avatar file", error)

@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/utils/cn"
-import { readFileAsDataUrl } from "@/utils/helpers"
+import { readImageAsCompressedDataUrl } from "@/utils/helpers"
 import { useTranslation } from "@/i18n/useTranslation"
 import { Clipboard, ImagePlus, X } from "lucide-react"
 
@@ -234,7 +234,11 @@ export const MessageForm = ({
       return
     }
     try {
-      const dataUrl = await readFileAsDataUrl(file)
+      // Message-bubble images are viewed larger than avatars, so allow a
+      // bigger max edge, but still re-encode - a raw 4-5MB phone photo adds
+      // up fast across a whole conversation and is the single biggest
+      // contributor to hitting the localStorage quota.
+      const dataUrl = await readImageAsCompressedDataUrl(file, 1280, 0.85)
       setImageUrl(dataUrl)
       setImageError(null)
     } catch (error) {

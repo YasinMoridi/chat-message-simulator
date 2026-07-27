@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
-import { clamp, getConversationTitle, isGroupConversation, readFileAsDataUrl } from "@/utils/helpers"
+import { clamp, getConversationTitle, isGroupConversation, readImageAsCompressedDataUrl } from "@/utils/helpers"
 import { useTranslation } from "@/i18n/useTranslation"
 
 export const SettingsPanel = () => {
@@ -169,7 +169,11 @@ export const SettingsPanel = () => {
                   const file = event.target.files?.[0]
                   if (!file) return
                   try {
-                    const dataUrl = await readFileAsDataUrl(file)
+                    // No size cap was ever enforced here before, so a full-res
+                    // phone photo used as a background was often the single
+                    // biggest thing in localStorage - compress it like every
+                    // other image the app stores.
+                    const dataUrl = await readImageAsCompressedDataUrl(file, 1600, 0.85)
                     setBackgroundImageUrl(dataUrl)
                   } catch (error) {
                     console.error("Failed to read background file", error)
