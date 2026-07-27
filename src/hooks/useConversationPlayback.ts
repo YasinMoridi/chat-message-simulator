@@ -21,6 +21,13 @@ interface UseConversationPlaybackOptions {
 /** Which chat is currently being animated/shown. */
 export type ActiveThread = { kind: "main" } | { kind: "sub"; participantId: string }
 
+/** A single point in the playback timeline - used to step back/forward. */
+interface HistorySnapshot {
+  thread: ActiveThread
+  revealCount: number
+  subRevealCount: number
+}
+
 /** How long the notification banner stays up before it slides away. */
 const BANNER_HOLD_MS = 2600
 /** Must match the transition duration used in NotificationBanner.tsx. */
@@ -37,6 +44,27 @@ const MIN_OWN_TYPING_MS = 500
  */
 const MAX_OWN_TYPING_MS = 6000
 
+// Info about whichever timer-driven phase (typing or resting) is currently
+// scheduled, kept fresh so pause() can work out how much time is left in it.
+interface RunningPhase {
+  type: "typing" | "resting"
+  thread: ActiveThread
+  index: number
+  message: Message
+  isOwnTextMessage: boolean
+  text: string
+  typingMs: number
+  restMs: number
+  isReturn: boolean
+  startedAt: number
+}
+
+// Same shape, but frozen while paused (remainingMs replaces "how much time
+// has passed since startedAt" with "how much is left in this phase").
+interface PausedPhase extends Omit<RunningPhase, "startedAt"> {
+  remainingMs: number
+}
+
 export const useConversationPlayback = (
   messages: Message[],
   { soundEnabled = true, selfId, subConversations = {} }: UseConversationPlaybackOptions = {},
@@ -48,6 +76,10 @@ export const useConversationPlayback = (
   // field. Null whenever nobody is composing an own text message right now.
   const [typingDraftText, setTypingDraftText] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
+  // True while a play session is active but timers are frozen - either the
+  // user hit "pause", or they stepped back/forward manually. Only
+  // meaningful while isPlaying is true.
+  const [isPaused, setIsPaused] = useState(false)
   const [bannerMessage, setBannerMessage] = useState<Message | null>(null)
   const [bannerVisible, setBannerVisible] = useState(false)
   // Which chat the preview is currently showing. "main" unless a clickable,
@@ -55,6 +87,9 @@ export const useConversationPlayback = (
   // is now open.
   const [activeThread, setActiveThread] = useState<ActiveThread>({ kind: "main" })
   const [subRevealCount, setSubRevealCount] = useState(0)
+  // Mirrors historyRef/historyIndexRef purely so the UI can enable/disable
+  // the step back/forward buttons - the refs below are the source of truth.
+  const [stepState, setStepState] = useState({ canStepBack: false, canStepForward: false })
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bannerTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const keystrokeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -78,6 +113,44 @@ export const useConversationPlayback = (
   // activeThread.kind === "sub".
   const pendingMainResumeIndexRef = useRef(0)
 
+  // Whichever timer-driven phase is currently ticking down (or null when
+  // nothing is scheduled, e.g. waiting for a notification tap).
+  const runningPhaseRef = useRef<RunningPhase | null>(null)
+  // Snapshot of the phase that was interrupted by pause(), so resume() can
+  // pick it back up with the correct remaining time.
+  const pausedPhaseRef = useRef<PausedPhase | null>(null)
+  // When the banner's own auto-hide timer is running, its start time + full
+  // hold duration - so pausing can freeze it too instead of letting it
+  // slide away while the rest of the preview is frozen.
+  const bannerHoldRef = useRef<{ startedAt: number; holdMs: number } | null>(null)
+  const pausedBannerRemainingRef = useRef<number | null>(null)
+
+  // Every revealed message pushes a snapshot here. Stepping back/forward
+  // just walks this list instead of trying to re-derive "what was on screen
+  // two moves ago", which would be ambiguous once side-chats are involved.
+  const historyRef = useRef<HistorySnapshot[]>([{ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 }])
+  const historyIndexRef = useRef(0)
+
+  const syncStepState = () => {
+    setStepState({
+      canStepBack: historyIndexRef.current > 0,
+      canStepForward: historyIndexRef.current < historyRef.current.length - 1,
+    })
+  }
+
+  const pushHistory = (snapshot: HistorySnapshot) => {
+    historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1)
+    historyRef.current.push(snapshot)
+    historyIndexRef.current = historyRef.current.length - 1
+    syncStepState()
+  }
+
+  const resetHistory = (snapshot: HistorySnapshot) => {
+    historyRef.current = [snapshot]
+    historyIndexRef.current = 0
+    syncStepState()
+  }
+
   const clearPendingTimeout = () => {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current)
@@ -99,6 +172,7 @@ export const useConversationPlayback = (
 
   const dismissBanner = () => {
     clearBannerTimeouts()
+    bannerHoldRef.current = null
     setBannerVisible(false)
     setBannerMessage(null)
   }
@@ -106,36 +180,36 @@ export const useConversationPlayback = (
   // Slides the banner in for `message`, then back out after BANNER_HOLD_MS
   // (or sooner if the next message is due before that) - UNLESS `persist` is
   // set, in which case no auto-hide timer is scheduled at all.
-  //
-  // `persist` is used for any `notificationClickable` message: those banners
-  // must stay up until a real or auto-scripted tap actually happens, which
-  // is what calls `dismissBanner` (via `openLinkedConversation`/`stop`).
-  // Previously every banner - including clickable ones - was auto-hidden
-  // after a fixed timer derived from the message's own `restMs`/`delayMs`,
-  // completely unrelated to `notificationAutoOpenDelayMs`. Whenever the
-  // scripted auto-open delay (or a slow real click) was longer than that
-  // timer, the banner (and `bannerMessage`) got cleared first - which made
-  // the auto-tap effect in MainLayout see `bannerVisible === false` and
-  // cancel its own pending timeout before it ever fired. That's why a
-  // clickable+linked notification froze the preview instead of opening the
-  // linked chat: the tap that was supposed to call `openLinkedConversation`
-  // simply got cancelled out from under itself.
   const showBanner = (message: Message, holdMs: number, options?: { persist?: boolean }) => {
     clearBannerTimeouts()
+    bannerHoldRef.current = null
     setBannerMessage(message)
-    // Mount hidden first, then flip to visible a tick later so the
-    // slide-down/fade transition actually plays instead of popping in.
     const raf = requestAnimationFrame(() => setBannerVisible(true))
     bannerTimeoutsRef.current.push(raf as unknown as ReturnType<typeof setTimeout>)
 
     if (options?.persist) return
 
     const hideAfter = Math.max(600, Math.min(holdMs, BANNER_HOLD_MS))
+    bannerHoldRef.current = { startedAt: Date.now(), holdMs: hideAfter }
     const hideTimeout = setTimeout(() => {
+      bannerHoldRef.current = null
       setBannerVisible(false)
       const clearTimeoutId = setTimeout(() => setBannerMessage(null), BANNER_EXIT_MS)
       bannerTimeoutsRef.current.push(clearTimeoutId)
     }, hideAfter)
+    bannerTimeoutsRef.current.push(hideTimeout)
+  }
+
+  // Restarts the banner's own auto-hide countdown for `remainingMs` more -
+  // used when resume() picks a paused banner back up.
+  const rescheduleBannerHide = (remainingMs: number) => {
+    bannerHoldRef.current = { startedAt: Date.now(), holdMs: remainingMs }
+    const hideTimeout = setTimeout(() => {
+      bannerHoldRef.current = null
+      setBannerVisible(false)
+      const clearTimeoutId = setTimeout(() => setBannerMessage(null), BANNER_EXIT_MS)
+      bannerTimeoutsRef.current.push(clearTimeoutId)
+    }, remainingMs)
     bannerTimeoutsRef.current.push(hideTimeout)
   }
 
@@ -147,12 +221,7 @@ export const useConversationPlayback = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
 
-  // Same as above, but for whichever linked side-chat is currently open: once
-  // its scripted autoplay has finished (or if it's just sitting open), keep
-  // showing every message it actually has - so messages added, edited, or
-  // removed via that participant's chat tab in the builder after a notification opened
-  // this chat show up immediately instead of staying stuck at the count from
-  // whenever the auto-play step loop last touched it.
+  // Same as above, but for whichever linked side-chat is currently open.
   useEffect(() => {
     if (isPlaying) return
     if (activeThread.kind !== "sub") return
@@ -164,12 +233,17 @@ export const useConversationPlayback = (
     clearPendingTimeout()
     clearKeystrokeInterval()
     dismissBanner()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
     setIsPlaying(false)
+    setIsPaused(false)
     setTypingSenderId(null)
     setTypingDraftText(null)
     setRevealCount(messages.length)
     setActiveThread({ kind: "main" })
     setSubRevealCount(0)
+    resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
   }
 
   // Works out how long a message should "type" for and how long to wait
@@ -202,19 +276,27 @@ export const useConversationPlayback = (
     return { typingMs, restMs, isOwnTextMessage, text }
   }
 
+  // `startFromChar` lets resume() continue an own-text typing animation
+  // partway through instead of restarting it from the first letter.
   const beginTypingSimulation = (
     message: Message,
     isOwnTextMessage: boolean,
     text: string,
     typingMs: number,
+    startFromChar = 0,
   ) => {
     if (message.type !== "system" && message.type !== "notification") {
       setTypingSenderId(message.senderId)
     }
     if (isOwnTextMessage) {
-      setTypingDraftText("")
-      let charIndex = 0
-      const keystrokeDelay = typingMs / text.length
+      const remainingChars = text.length - startFromChar
+      if (remainingChars <= 0 || typingMs <= 0) {
+        setTypingDraftText(text)
+        return
+      }
+      setTypingDraftText(text.slice(0, startFromChar))
+      let charIndex = startFromChar
+      const keystrokeDelay = typingMs / remainingChars
       clearKeystrokeInterval()
       keystrokeIntervalRef.current = setInterval(() => {
         charIndex += 1
@@ -228,63 +310,305 @@ export const useConversationPlayback = (
     }
   }
 
-  // Runs the main thread starting at `startIndex` - used both by play() and
-  // by the "resume after a side-chat closed" continuation.
-  const runMainFrom = (startIndex: number) => {
-    const step = (index: number) => {
-      const msgs = messagesRef.current
-      if (index >= msgs.length) {
-        setIsPlaying(false)
-        setTypingSenderId(null)
-        setTypingDraftText(null)
-        return
-      }
-
-      const message = msgs[index]
-      const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
-      beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
-
-      timeoutRef.current = setTimeout(() => {
-        clearKeystrokeInterval()
-        setTypingSenderId(null)
-        setTypingDraftText(null)
-        setRevealCount(index + 1)
-        if (soundEnabledRef.current && message.type !== "system") {
-          playMessageSound()
-        }
-        if (message.type === "notification") {
-          showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
-        }
-
-        // A clickable notification that's linked to a real side-chat pauses
-        // the main thread right here - only a tap (real or auto-scripted)
-        // moves the story forward from this point.
-        const opensLinkedThread =
-          message.type === "notification" &&
-          Boolean(message.notificationClickable) &&
-          Boolean(message.linkedParticipantId)
-        if (opensLinkedThread) {
-          pendingMainResumeIndexRef.current = index + 1
-          return
-        }
-
-        timeoutRef.current = setTimeout(() => step(index + 1), restMs)
-      }, typingMs)
+  // Applies the visible effects of a message becoming revealed - bumping the
+  // right reveal counter, playing the pop sound, showing a banner if it's a
+  // notification, and recording a history snapshot for step back/forward.
+  const applyReveal = (thread: ActiveThread, index: number, message: Message, restMs: number) => {
+    const newRevealCount = thread.kind === "main" ? index + 1 : revealCount
+    const newSubRevealCount = thread.kind === "sub" ? index + 1 : 0
+    if (thread.kind === "main") {
+      setRevealCount(newRevealCount)
+    } else {
+      setSubRevealCount(newSubRevealCount)
     }
-    step(startIndex)
+    if (soundEnabledRef.current && message.type !== "system") {
+      playMessageSound()
+    }
+    if (message.type === "notification") {
+      showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
+    }
+    pushHistory({ thread, revealCount: newRevealCount, subRevealCount: newSubRevealCount })
+  }
+
+  const advance = (thread: ActiveThread, index: number) => {
+    const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
+    if (index >= msgs.length) {
+      setIsPlaying(false)
+      setIsPaused(false)
+      setTypingSenderId(null)
+      setTypingDraftText(null)
+      runningPhaseRef.current = null
+      return
+    }
+    startTypingPhase(thread, index, msgs[index])
+  }
+
+  const startTypingPhase = (thread: ActiveThread, index: number, message: Message) => {
+    const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
+    beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
+    runningPhaseRef.current = {
+      type: "typing",
+      thread,
+      index,
+      message,
+      isOwnTextMessage,
+      text,
+      typingMs,
+      restMs,
+      isReturn: false,
+      startedAt: Date.now(),
+    }
+    timeoutRef.current = setTimeout(() => finishTypingPhase(thread, index, message, restMs), typingMs)
+  }
+
+  const finishTypingPhase = (thread: ActiveThread, index: number, message: Message, restMs: number) => {
+    clearKeystrokeInterval()
+    setTypingSenderId(null)
+    setTypingDraftText(null)
+    applyReveal(thread, index, message, restMs)
+
+    // A clickable notification that's linked to a real side-chat pauses the
+    // main thread right here - only a tap (real or auto-scripted) moves the
+    // story forward from this point.
+    const opensLinkedThread =
+      thread.kind === "main" &&
+      message.type === "notification" &&
+      Boolean(message.notificationClickable) &&
+      Boolean(message.linkedParticipantId)
+    if (opensLinkedThread) {
+      pendingMainResumeIndexRef.current = index + 1
+      runningPhaseRef.current = null
+      return
+    }
+
+    const isReturn = thread.kind === "sub" && Boolean(message.returnToParent)
+    startRestingPhase(thread, index, message, restMs, isReturn)
+  }
+
+  const startRestingPhase = (
+    thread: ActiveThread,
+    index: number,
+    message: Message,
+    restMs: number,
+    isReturn: boolean,
+  ) => {
+    runningPhaseRef.current = {
+      type: "resting",
+      thread,
+      index,
+      message,
+      isOwnTextMessage: false,
+      text: "",
+      typingMs: 0,
+      restMs,
+      isReturn,
+      startedAt: Date.now(),
+    }
+    timeoutRef.current = setTimeout(() => {
+      if (isReturn) {
+        setActiveThread({ kind: "main" })
+        setSubRevealCount(0)
+        runningPhaseRef.current = null
+        advance({ kind: "main" }, pendingMainResumeIndexRef.current)
+      } else {
+        advance(thread, index + 1)
+      }
+    }, restMs)
   }
 
   const play = () => {
     clearPendingTimeout()
     clearKeystrokeInterval()
     dismissBanner()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
     setIsPlaying(true)
+    setIsPaused(false)
     setTypingSenderId(null)
     setTypingDraftText(null)
     setRevealCount(0)
     setActiveThread({ kind: "main" })
     setSubRevealCount(0)
-    runMainFrom(0)
+    resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
+    advance({ kind: "main" }, 0)
+  }
+
+  // Freezes playback exactly where it is - the current message stays
+  // partially "typed", the banner stays up, nothing advances - until
+  // resume() is called.
+  const pause = () => {
+    if (!isPlaying || isPaused) return
+    clearPendingTimeout()
+    clearKeystrokeInterval()
+    const phase = runningPhaseRef.current
+    if (phase) {
+      const elapsed = Date.now() - phase.startedAt
+      const duration = phase.type === "typing" ? phase.typingMs : phase.restMs
+      const remainingMs = Math.max(0, duration - elapsed)
+      pausedPhaseRef.current = { ...phase, remainingMs }
+    } else {
+      pausedPhaseRef.current = null
+    }
+    if (bannerHoldRef.current) {
+      const elapsed = Date.now() - bannerHoldRef.current.startedAt
+      pausedBannerRemainingRef.current = Math.max(0, bannerHoldRef.current.holdMs - elapsed)
+      bannerHoldRef.current = null
+      clearBannerTimeouts()
+    } else {
+      pausedBannerRemainingRef.current = null
+    }
+    runningPhaseRef.current = null
+    setIsPaused(true)
+  }
+
+  // Picks up exactly where pause() left off - or, if the user stepped
+  // back/forward manually in the meantime (so there's no remembered phase),
+  // simply keeps playing forward from wherever the preview is now sitting.
+  const resume = () => {
+    if (!isPlaying || !isPaused) return
+    setIsPaused(false)
+
+    if (pausedBannerRemainingRef.current != null) {
+      rescheduleBannerHide(pausedBannerRemainingRef.current)
+      pausedBannerRemainingRef.current = null
+    }
+
+    const phase = pausedPhaseRef.current
+    pausedPhaseRef.current = null
+
+    if (phase) {
+      if (phase.type === "typing") {
+        // How far through the original typing duration we already were,
+        // so an own-text message resumes its keystrokes instead of
+        // retyping the whole thing.
+        const fractionElapsed = phase.typingMs > 0 ? 1 - phase.remainingMs / phase.typingMs : 1
+        const startFromChar = phase.isOwnTextMessage
+          ? Math.min(phase.text.length, Math.floor(fractionElapsed * phase.text.length))
+          : 0
+        runningPhaseRef.current = { ...phase, typingMs: phase.remainingMs, startedAt: Date.now() }
+        beginTypingSimulation(phase.message, phase.isOwnTextMessage, phase.text, phase.remainingMs, startFromChar)
+        timeoutRef.current = setTimeout(
+          () => finishTypingPhase(phase.thread, phase.index, phase.message, phase.restMs),
+          Math.max(0, phase.remainingMs),
+        )
+      } else {
+        runningPhaseRef.current = { ...phase, restMs: phase.remainingMs, startedAt: Date.now() }
+        timeoutRef.current = setTimeout(() => {
+          if (phase.isReturn) {
+            setActiveThread({ kind: "main" })
+            setSubRevealCount(0)
+            runningPhaseRef.current = null
+            advance({ kind: "main" }, pendingMainResumeIndexRef.current)
+          } else {
+            advance(phase.thread, phase.index + 1)
+          }
+        }, Math.max(0, phase.remainingMs))
+      }
+      return
+    }
+
+    // Nothing was mid-flight (e.g. the user had stepped manually, or
+    // playback was sitting idle waiting for a notification tap) - just
+    // keep going forward from the current position.
+    const idx = activeThread.kind === "main" ? revealCount : subRevealCount
+    advance(activeThread, idx)
+  }
+
+  const freezeForManualStep = () => {
+    clearPendingTimeout()
+    clearKeystrokeInterval()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
+    setTypingSenderId(null)
+    setTypingDraftText(null)
+    setIsPlaying(true)
+    setIsPaused(true)
+  }
+
+  // Shared by the cold-start and warm cases of stepForward(): instantly
+  // reveals message `index` of `thread` and applies whatever branch it
+  // triggers (opening a linked side-chat, or returning from one).
+  const revealNextLive = (thread: ActiveThread, index: number) => {
+    const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
+    if (index >= msgs.length) {
+      setIsPlaying(false)
+      setIsPaused(false)
+      return
+    }
+    const message = msgs[index]
+    const { restMs } = prepareMessageTiming(message)
+    applyReveal(thread, index, message, restMs)
+
+    if (
+      thread.kind === "main" &&
+      message.type === "notification" &&
+      message.notificationClickable &&
+      message.linkedParticipantId
+    ) {
+      const participantId = message.linkedParticipantId
+      pendingMainResumeIndexRef.current = index + 1
+      dismissBanner()
+      setActiveThread({ kind: "sub", participantId })
+      setSubRevealCount(0)
+      pushHistory({ thread: { kind: "sub", participantId }, revealCount: index + 1, subRevealCount: 0 })
+      return
+    }
+    if (thread.kind === "sub" && message.returnToParent) {
+      setActiveThread({ kind: "main" })
+      setSubRevealCount(0)
+      pushHistory({ thread: { kind: "main" }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
+    }
+  }
+
+  // Reveals exactly one more message (no typing animation, no waiting) and
+  // freezes there - like stepping a video forward one frame.
+  const stepForward = () => {
+    // If we've stepped back earlier, just replay the remembered future
+    // state instead of recomputing it.
+    if (historyIndexRef.current < historyRef.current.length - 1) {
+      freezeForManualStep()
+      historyIndexRef.current += 1
+      const snap = historyRef.current[historyIndexRef.current]
+      syncStepState()
+      setActiveThread(snap.thread)
+      setRevealCount(snap.revealCount)
+      setSubRevealCount(snap.subRevealCount)
+      return
+    }
+
+    // Cold start - nothing has played yet.
+    if (!isPlaying) {
+      freezeForManualStep()
+      setRevealCount(0)
+      setActiveThread({ kind: "main" })
+      setSubRevealCount(0)
+      resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
+      dismissBanner()
+      revealNextLive({ kind: "main" }, 0)
+      return
+    }
+
+    freezeForManualStep()
+    const thread = activeThread
+    const idx = thread.kind === "main" ? revealCount : subRevealCount
+    revealNextLive(thread, idx)
+  }
+
+  // Hides the most recently revealed message and freezes there - like
+  // stepping a video backward one frame. Walks the recorded history so
+  // side-chat boundaries are undone correctly instead of guessed at.
+  const stepBack = () => {
+    if (historyIndexRef.current <= 0) return
+    freezeForManualStep()
+    dismissBanner()
+    historyIndexRef.current -= 1
+    const snap = historyRef.current[historyIndexRef.current]
+    syncStepState()
+    setActiveThread(snap.thread)
+    setRevealCount(snap.revealCount)
+    setSubRevealCount(snap.subRevealCount)
   }
 
   // Opens the side-chat linked to `participantId` (called once a clickable
@@ -294,47 +618,14 @@ export const useConversationPlayback = (
     clearPendingTimeout()
     clearKeystrokeInterval()
     dismissBanner()
+    runningPhaseRef.current = null
+    pausedPhaseRef.current = null
+    pausedBannerRemainingRef.current = null
+    setIsPaused(false)
     setActiveThread({ kind: "sub", participantId })
     setSubRevealCount(0)
-
-    const step = (index: number) => {
-      const msgs = subConversationsRef.current[participantId] ?? []
-      if (index >= msgs.length) {
-        setIsPlaying(false)
-        setTypingSenderId(null)
-        setTypingDraftText(null)
-        return
-      }
-
-      const message = msgs[index]
-      const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
-      beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
-
-      timeoutRef.current = setTimeout(() => {
-        clearKeystrokeInterval()
-        setTypingSenderId(null)
-        setTypingDraftText(null)
-        setSubRevealCount(index + 1)
-        if (soundEnabledRef.current && message.type !== "system") {
-          playMessageSound()
-        }
-        if (message.type === "notification") {
-          showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
-        }
-
-        if (message.returnToParent) {
-          timeoutRef.current = setTimeout(() => {
-            setActiveThread({ kind: "main" })
-            setSubRevealCount(0)
-            runMainFrom(pendingMainResumeIndexRef.current)
-          }, restMs)
-          return
-        }
-
-        timeoutRef.current = setTimeout(() => step(index + 1), restMs)
-      }, typingMs)
-    }
-    step(0)
+    pushHistory({ thread: { kind: "sub", participantId }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
+    advance({ kind: "sub", participantId }, 0)
   }
 
   useEffect(
@@ -359,8 +650,22 @@ export const useConversationPlayback = (
      */
     typingDraftText,
     isPlaying,
+    /** True while a play session is active but frozen (paused, or mid manual step). */
+    isPaused,
     play,
     stop,
+    /** Freezes playback exactly where it is. */
+    pause,
+    /** Continues playback from exactly where it was frozen. */
+    resume,
+    /** Reveals the next message instantly and freezes there. */
+    stepForward,
+    /** Hides the last revealed message and freezes there. */
+    stepBack,
+    /** Whether stepBack() would currently do anything. */
+    canStepBack: stepState.canStepBack,
+    /** Whether stepForward() would currently do anything. */
+    canStepForward: stepState.canStepForward,
     /** The message the notification banner is currently showing, if any. */
     bannerMessage,
     /** Whether the banner should be in its "shown" (vs sliding out) state. */

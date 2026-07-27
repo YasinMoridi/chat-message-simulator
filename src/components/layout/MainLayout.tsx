@@ -6,9 +6,12 @@ import {
   Image,
   MessagesSquare,
   Minus,
+  Pause,
   Play,
   Plus,
   ScreenShare,
+  SkipBack,
+  SkipForward,
   SlidersHorizontal,
   SquareStack,
   Square,
@@ -116,8 +119,15 @@ export const MainLayout = () => {
     typingSenderId,
     typingDraftText,
     isPlaying,
+    isPaused,
     play,
     stop,
+    pause,
+    resume,
+    stepForward,
+    stepBack,
+    canStepBack,
+    canStepForward,
     bannerMessage,
     bannerVisible,
     activeThread,
@@ -495,7 +505,8 @@ export const MainLayout = () => {
       !bannerVisible ||
       !bannerMessage?.notificationClickable ||
       !bannerMessage?.notificationAutoOpen ||
-      isOpeningChatFromBanner
+      isOpeningChatFromBanner ||
+      isPaused
     ) {
       return
     }
@@ -512,7 +523,7 @@ export const MainLayout = () => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bannerMessage, bannerVisible])
+  }, [bannerMessage, bannerVisible, isPaused])
 
   useEffect(() => {
     return () => {
@@ -659,15 +670,54 @@ export const MainLayout = () => {
                   </div>
                   <div className="flex w-full items-center gap-2 overflow-x-auto pb-1 sm:w-auto sm:flex-wrap">
                     <Button
-                      variant={isPlaying ? "outline" : "default"}
+                      variant="outline"
+                      size="sm"
+                      disabled={visiblePlaybackMessages.length === 0 || !canStepBack}
+                      onClick={stepBack}
+                      title="Step back"
+                    >
+                      <SkipBack className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant={isPlaying && !isPaused ? "outline" : "default"}
                       size="sm"
                       disabled={visiblePlaybackMessages.length === 0}
-                      onClick={() => (isPlaying ? stop() : play())}
+                      onClick={() => {
+                        if (isPlaying && !isPaused) {
+                          pause()
+                        } else if (isPlaying && isPaused) {
+                          resume()
+                        } else {
+                          play()
+                        }
+                      }}
                     >
-                      {isPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                      {isPlaying && !isPaused ? (
+                        <Pause className="h-4 w-4" />
+                      ) : (
+                        <Play className="h-4 w-4" />
+                      )}
                       <span className="hidden sm:inline">
-                        {isPlaying ? "Stop" : "Play conversation"}
+                        {isPlaying && !isPaused ? "Pause" : isPlaying && isPaused ? "Resume" : "Play conversation"}
                       </span>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={visiblePlaybackMessages.length === 0 || (isPlaying && !canStepForward)}
+                      onClick={stepForward}
+                      title="Step forward"
+                    >
+                      <SkipForward className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!isPlaying}
+                      onClick={stop}
+                      title="Stop"
+                    >
+                      <Square className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="outline"
