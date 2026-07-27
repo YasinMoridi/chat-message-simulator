@@ -131,7 +131,7 @@ export const ConversationView = ({
             return (
               <div key={message.id} className="space-y-3">
                 {showDate ? <div className={dateBadgeClass}>{currentDate}</div> : null}
-                <div className={systemMessageClass}>{message.content}</div>
+                <div dir="auto" className={systemMessageClass}>{message.content}</div>
               </div>
             )
           }

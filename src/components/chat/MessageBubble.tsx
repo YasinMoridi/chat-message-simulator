@@ -196,6 +196,7 @@ export const MessageBubble = ({
           )}
           {message.content ? (
             <p
+              dir="auto"
               className={cn(
                 "mt-1 max-w-[240px] whitespace-pre-wrap break-words px-2 pb-1 text-[0.8rem] leading-snug",
                 isWhatsApp && "text-[0.75rem]",
@@ -211,7 +212,7 @@ export const MessageBubble = ({
           ) : null}
         </div>
       ) : (
-        <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+        <p dir="auto" className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
       )}
       {isWhatsApp ? (
         <div

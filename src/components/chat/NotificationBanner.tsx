@@ -122,6 +122,7 @@ export const NotificationBanner = ({
               {senderName}
             </div>
             <div
+              dir="auto"
               className="text-[0.8rem] leading-snug text-slate-700"
               style={{
                 display: "-webkit-box",
@@ -143,7 +144,7 @@ export const NotificationBanner = ({
         >
           {icon}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[0.8rem] leading-snug text-white">
+            <div dir="auto" className="truncate text-[0.8rem] leading-snug text-white">
               <span className="font-semibold">{senderName}</span>
               <span className="text-slate-300"> - {messageText}</span>
             </div>

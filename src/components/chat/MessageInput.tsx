@@ -155,6 +155,7 @@ export const MessageInput = ({ placeholder = "Message", layout, typingText }: Me
         {isMessenger && !isTyping ? <Smile className={cn(iconClass, "text-[var(--chat-muted)]")} /> : null}
         {isTyping ? (
           <span
+            dir="auto"
             className="min-w-0 flex-1 whitespace-pre-wrap break-words"
             style={{ color: "var(--chat-text)" }}
           >
