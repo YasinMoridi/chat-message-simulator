@@ -44,6 +44,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/utils/cn"
 import { formatTimestamp, generateId } from "@/utils/helpers"
+import { parseConversationTranscript } from "@/utils/transcriptImport"
 import { useTranslation } from "@/i18n/useTranslation"
 import type { TranslationTree } from "@/i18n/translations"
 
@@ -352,6 +353,7 @@ export const ConversationBuilder = () => {
     (state) => state.duplicateSubConversationMessage,
   )
   const setSubConversationMessages = useConversationStore((state) => state.setSubConversationMessages)
+  const loadConversation = useConversationStore((state) => state.loadConversation)
 
   // Who's actually chatting in this conversation right now, as opposed to
   // the full character roster - the sender dropdown should only offer
@@ -366,9 +368,13 @@ export const ConversationBuilder = () => {
   const [openActionsId, setOpenActionsId] = useState<string | null>(null)
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false)
   const [isAddOpen, setIsAddOpen] = useState(false)
-  const [viewMode, setViewMode] = useState<"standard" | "easy">("standard")
+  const [viewMode, setViewMode] = useState<"standard" | "easy" | "transcript">("standard")
   const [easyInput, setEasyInput] = useState("")
   const [easyError, setEasyError] = useState<string | null>(null)
+  const [transcriptInput, setTranscriptInput] = useState("")
+  const [transcriptError, setTranscriptError] = useState<string | null>(null)
+  const [transcriptWarnings, setTranscriptWarnings] = useState<string[]>([])
+  const transcriptFileInputRef = useRef<HTMLInputElement | null>(null)
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null)
   const toastTimerRef = useRef<number | null>(null)
 
@@ -567,14 +573,53 @@ export const ConversationBuilder = () => {
     showToast(t.builder.easyModeExported)
   }
 
-  const handleViewModeChange = (mode: "standard" | "easy") => {
+  const handleViewModeChange = (mode: "standard" | "easy" | "transcript") => {
     setEditingId(null)
     setOpenActionsId(null)
     setEasyError(null)
     if (mode === "easy") {
       setEasyInput(buildEasyText())
     }
+    if (mode === "transcript") {
+      setTranscriptError(null)
+      setTranscriptWarnings([])
+    }
     setViewMode(mode)
+  }
+
+  // Full-project rebuild from a narrative .txt transcript (paste or file
+  // upload) - unlike easy mode, this replaces everything: every
+  // participant, the main conversation, and every linked side-chat.
+  const handleApplyTranscript = () => {
+    if (!transcriptInput.trim()) {
+      setTranscriptError(t.builder.transcriptEmpty)
+      return
+    }
+    if (!window.confirm(t.builder.transcriptConfirmOverwrite)) return
+    try {
+      const { conversation, warnings } = parseConversationTranscript(transcriptInput)
+      loadConversation(conversation)
+      setTranscriptError(null)
+      setTranscriptWarnings(warnings)
+      setViewMode("standard")
+      setActiveThreadTab("main")
+      showToast(warnings.length > 0 ? t.builder.transcriptAppliedWithWarnings : t.builder.transcriptApplied)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTranscriptError(`${t.builder.transcriptParseError}: ${message}`)
+      showToast(t.builder.transcriptParseError, "error")
+    }
+  }
+
+  const handleTranscriptFileChange = async (file: File | null) => {
+    if (!file) return
+    try {
+      const text = await file.text()
+      setTranscriptInput(text)
+      setTranscriptError(null)
+    } catch {
+      setTranscriptError(t.builder.transcriptParseError)
+    }
   }
 
   const handleEasyApply = () => {
@@ -860,9 +905,84 @@ export const ConversationBuilder = () => {
               >
                 {t.builder.easy}
               </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={viewMode === "transcript" ? "default" : "outline"}
+                onClick={() => handleViewModeChange("transcript")}
+              >
+                {t.builder.transcript}
+              </Button>
             </div>
           </div>
-          {viewMode === "easy" ? (
+          {viewMode === "transcript" ? (
+            <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <Label className="text-xs uppercase text-slate-400">{t.builder.transcriptEditor}</Label>
+              <p className="mt-1 text-xs text-slate-500">{t.builder.transcriptEditorDescription}</p>
+              <div className="mt-3 space-y-2">
+                <input
+                  ref={transcriptFileInputRef}
+                  type="file"
+                  accept=".txt,text/plain"
+                  className="hidden"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null
+                    void handleTranscriptFileChange(file)
+                    event.target.value = ""
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => transcriptFileInputRef.current?.click()}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {t.builder.transcriptUploadButton}
+                </Button>
+                <Textarea
+                  value={transcriptInput}
+                  onChange={(event) => {
+                    setTranscriptInput(event.target.value)
+                    if (transcriptError) setTranscriptError(null)
+                  }}
+                  placeholder={t.builder.transcriptPastePlaceholder}
+                  className="min-h-[280px] resize-y font-mono"
+                  dir="auto"
+                />
+                {transcriptError ? (
+                  <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{transcriptError}</div>
+                ) : null}
+                {transcriptWarnings.length > 0 ? (
+                  <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                    <div className="font-semibold">{t.builder.transcriptWarningsTitle}</div>
+                    <ul className="list-disc space-y-0.5 pr-4">
+                      {transcriptWarnings.map((warning, index) => (
+                        <li key={index}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button type="button" onClick={handleApplyTranscript}>
+                  {t.builder.transcriptApply}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setTranscriptInput("")
+                    setTranscriptError(null)
+                    setTranscriptWarnings([])
+                  }}
+                >
+                  {t.builder.clear}
+                </Button>
+              </div>
+            </div>
+          ) : viewMode === "easy" ? (
             <div className="rounded-xl border border-slate-200 bg-white p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <Label className="text-xs uppercase text-slate-400">{t.builder.easyEditor}</Label>

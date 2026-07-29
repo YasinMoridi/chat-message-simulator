@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react"
-import { Copy, Download, Image, Loader2, StretchHorizontal, StretchVertical } from "lucide-react"
+import { Copy, Download, FileText, Image, Loader2, StretchHorizontal, StretchVertical } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { SizePresets } from "@/components/export/SizePresets"
 import { sizePresets } from "@/constants/exportPresets"
 import { exportNodeToImageSequence } from "@/utils/export"
+import { downloadConversationTranscript } from "@/utils/textExport"
+import { getSelfParticipantId } from "@/components/layout/ChatLayout"
+import { getConversationMembers } from "@/utils/helpers"
 import { useConversationStore } from "@/store/conversationStore"
 import {
   Dialog,
@@ -38,6 +41,9 @@ export const ExportPanel = ({
 }: ExportPanelProps) => {
   const exportSettings = useConversationStore((state) => state.exportSettings)
   const setExportSettings = useConversationStore((state) => state.setExportSettings)
+  const conversation = useConversationStore((state) => state.conversation)
+  const activeParticipantId = useConversationStore((state) => state.activeParticipantId)
+  const language = useConversationStore((state) => state.language)
   const [isExporting, setIsExporting] = useState(false)
   const [isSummaryOpen, setIsSummaryOpen] = useState(true)
   const [previewUrls, setPreviewUrls] = useState<string[]>([])
@@ -275,6 +281,26 @@ export const ExportPanel = ({
         <Button onClick={() => runExport("download")} disabled={isExporting}>
           {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
           Download
+        </Button>
+      </div>
+
+      <div className="space-y-2">
+        <Label>{language === "fa" ? "خروجی کامل متنی (txt)" : "Full text transcript (txt)"}</Label>
+        <p className="text-xs text-slate-500">
+          {language === "fa"
+            ? "هر پیام با تمام تنظیماتش (زمان، وضعیت، تاخیر)، هر نوتیفیکیشن، هر پرش به چت جداگانه و هر برگشت به چت اصلی - همه چیز، به ترتیب پخش، توی یه فایل txt."
+            : "Every message with all of its settings (timestamp, status, delay), every notification, every jump into a side-chat, and every return to the main chat - all of it, in playback order, in one txt file."}
+        </p>
+        <Button
+          variant="outline"
+          className="w-full"
+          onClick={() => {
+            const selfId = getSelfParticipantId(getConversationMembers(conversation), activeParticipantId)
+            downloadConversationTranscript(conversation, selfId, language === "fa" ? "fa" : "en")
+          }}
+        >
+          <FileText className="h-4 w-4" />
+          {language === "fa" ? "دانلود txt کامل" : "Download full txt"}
         </Button>
       </div>
 
