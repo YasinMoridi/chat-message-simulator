@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react"
 import type { Message } from "@/types/message"
-import { DEFAULT_MESSAGE_DELAY_MS } from "@/types/message"
 import { computeRevealTiming } from "@/utils/messageTiming"
 import { playMessageSound } from "@/utils/sound"
 
@@ -275,8 +274,10 @@ export const useConversationPlayback = (
         Math.max(MIN_KEYSTROKE_MS, MAX_OWN_TYPING_MS / text.length),
       )
       typingMs = Math.min(MAX_OWN_TYPING_MS, Math.max(MIN_OWN_TYPING_MS, text.length * keystrokeDelay))
-      const totalDelay = message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS
-      restMs = Math.max(250, totalDelay - typingMs)
+      // No artificial pause after typing finishes - the message sends the
+      // instant the simulated keystrokes finish, purely auto-timed from its
+      // own length. (message.delayMs is intentionally ignored here now.)
+      restMs = 0
     } else {
       ;({ typingMs, restMs } = computeRevealTiming(message.delayMs))
     }
@@ -292,6 +293,7 @@ export const useConversationPlayback = (
     text: string,
     typingMs: number,
     startFromChar = 0,
+    onComplete?: () => void,
   ) => {
     if (message.type !== "system" && message.type !== "notification") {
       setTypingSenderId(message.senderId)
@@ -300,6 +302,12 @@ export const useConversationPlayback = (
       const remainingChars = text.length - startFromChar
       if (remainingChars <= 0 || typingMs <= 0) {
         setTypingDraftText(text)
+        // Fire asynchronously (not mid-render) even in the already-done case,
+        // so callers can rely on onComplete always landing on its own tick.
+        if (onComplete) {
+          clearPendingTimeout()
+          timeoutRef.current = setTimeout(onComplete, 0)
+        }
         return
       }
       setTypingDraftText(text.slice(0, startFromChar))
@@ -311,6 +319,10 @@ export const useConversationPlayback = (
         setTypingDraftText(text.slice(0, charIndex))
         if (charIndex >= text.length) {
           clearKeystrokeInterval()
+          // Reveal is triggered right here, by the same clock that just
+          // rendered the final character - never by a second, independently
+          // scheduled timer that could drift and fire a beat early.
+          onComplete?.()
         }
       }, keystrokeDelay)
     } else {
@@ -360,7 +372,6 @@ export const useConversationPlayback = (
 
   const startTypingPhase = (thread: ActiveThread, index: number, message: Message) => {
     const { typingMs, restMs, isOwnTextMessage, text } = prepareMessageTiming(message)
-    beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
     runningPhaseRef.current = {
       type: "typing",
       thread,
@@ -373,7 +384,14 @@ export const useConversationPlayback = (
       isReturn: false,
       startedAt: Date.now(),
     }
-    timeoutRef.current = setTimeout(() => finishTypingPhase(thread, index, message, restMs), typingMs)
+    if (isOwnTextMessage) {
+      beginTypingSimulation(message, isOwnTextMessage, text, typingMs, 0, () =>
+        finishTypingPhase(thread, index, message, restMs),
+      )
+    } else {
+      beginTypingSimulation(message, isOwnTextMessage, text, typingMs)
+      timeoutRef.current = setTimeout(() => finishTypingPhase(thread, index, message, restMs), typingMs)
+    }
   }
 
   const finishTypingPhase = (thread: ActiveThread, index: number, message: Message, restMs: number) => {
@@ -502,11 +520,22 @@ export const useConversationPlayback = (
           ? Math.min(phase.text.length, Math.floor(fractionElapsed * phase.text.length))
           : 0
         runningPhaseRef.current = { ...phase, typingMs: phase.remainingMs, startedAt: Date.now() }
-        beginTypingSimulation(phase.message, phase.isOwnTextMessage, phase.text, phase.remainingMs, startFromChar)
-        timeoutRef.current = setTimeout(
-          () => finishTypingPhase(phase.thread, phase.index, phase.message, phase.restMs),
-          Math.max(0, phase.remainingMs),
-        )
+        if (phase.isOwnTextMessage) {
+          beginTypingSimulation(
+            phase.message,
+            phase.isOwnTextMessage,
+            phase.text,
+            phase.remainingMs,
+            startFromChar,
+            () => finishTypingPhase(phase.thread, phase.index, phase.message, phase.restMs),
+          )
+        } else {
+          beginTypingSimulation(phase.message, phase.isOwnTextMessage, phase.text, phase.remainingMs, startFromChar)
+          timeoutRef.current = setTimeout(
+            () => finishTypingPhase(phase.thread, phase.index, phase.message, phase.restMs),
+            Math.max(0, phase.remainingMs),
+          )
+        }
       } else {
         runningPhaseRef.current = { ...phase, restMs: phase.remainingMs, startedAt: Date.now() }
         timeoutRef.current = setTimeout(() => {
