@@ -331,7 +331,7 @@ export const MainLayout = () => {
           const otherMember = members.find((member) => member.id !== selfId)
           return {
             id: chat.id,
-            title: getChatTitle(members, chat.name),
+            title: isDirect ? otherMember?.name ?? getChatTitle(members, chat.name) : getChatTitle(members, chat.name),
             avatarUrl: isDirect ? otherMember?.avatarUrl : undefined,
             isVerified: isDirect ? otherMember?.isVerified : undefined,
           }

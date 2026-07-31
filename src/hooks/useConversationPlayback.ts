@@ -850,7 +850,10 @@ export const useConversationPlayback = (
   }
 
   // Tapping a contact on the home screen: opens a real, separate chat with
-  // them - same mechanism a clickable, linked notification uses.
+  // them - same mechanism a clickable, linked notification uses. Resumes
+  // wherever that chat last left off (e.g. it may have already played some
+  // messages before a backNavigation jump sent playback to home) instead of
+  // always restarting it from message 0.
   const openFromHome = (chatId: string) => {
     clearPendingTimeout()
     clearKeystrokeInterval()
@@ -861,11 +864,10 @@ export const useConversationPlayback = (
     setIsPaused(false)
     const target: ActiveThread = { kind: "chat", chatId }
     setActiveThread(target)
-    const nextRevealCounts = { ...revealCounts, [chatId]: 0 }
-    setRevealCounts(nextRevealCounts)
-    pushHistory({ thread: target, revealCounts: nextRevealCounts })
+    const startIndex = revealCounts[chatId] ?? 0
+    pushHistory({ thread: target, revealCounts })
     if (isPlaying) {
-      advance(target, 0)
+      advance(target, startIndex)
     }
   }
 
