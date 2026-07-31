@@ -1,5 +1,5 @@
 import { format } from "date-fns"
-import type { Conversation } from "@/types/conversation"
+import type { Chat, Conversation, Participant } from "@/types/conversation"
 
 export const generateId = () => {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -37,31 +37,35 @@ export const clamp = (value: number, min: number, max: number) =>
 
 /**
  * The roster (`conversation.participants`) can hold far more characters
- * than are actually chatting right now - `memberIds` narrows it down to
- * who's actually "in" this conversation. Falls back to the whole roster
- * for conversations saved before this field existed.
+ * than are actually chatting in any one chat - `chat.memberIds` narrows it
+ * down to who's actually "in" this particular chat.
  */
-export const getConversationMembers = (conversation: Conversation) => {
-  const ids = conversation.memberIds
-  if (!ids || ids.length === 0) return conversation.participants
-  const idSet = new Set(ids)
+export const getChatMembers = (conversation: Conversation, chat: Chat): Participant[] => {
+  const idSet = new Set(chat.memberIds)
   const members = conversation.participants.filter((participant) => idSet.has(participant.id))
   return members.length ? members : conversation.participants
 }
 
-/** A conversation is a "group" once 3+ of the roster are actually chatting together. */
-export const isGroupConversation = (conversation: Conversation) =>
-  getConversationMembers(conversation).length > 2
+/** A chat is a "group" once 3+ of its members are actually chatting together. */
+export const isGroupChat = (members: Participant[]) => members.length > 2
 
-export const getConversationTitle = (conversation: Conversation) => {
-  const members = getConversationMembers(conversation)
+/** Builds a display title for a chat from its resolved members and optional custom name. */
+export const getChatTitle = (members: Participant[], chatName?: string) => {
   const names = members.map((participant) => participant.name).filter(Boolean)
   if (members.length > 2) {
-    return conversation.groupName?.trim() || "Group Chat"
+    return chatName?.trim() || "Group Chat"
   }
   if (names.length === 0) return "New Chat"
   if (names.length === 1) return names[0]
   return `${names[0]} & ${names[1]}`
+}
+
+/** Set-equality check on two lists of participant ids, ignoring order/duplicates. */
+export const sameMemberSet = (a: string[], b: string[]) => {
+  if (a.length !== b.length) return false
+  const setA = new Set(a)
+  if (setA.size !== new Set(b).size) return false
+  return b.every((id) => setA.has(id))
 }
 
 export const readFileAsDataUrl = (file: File): Promise<string> =>

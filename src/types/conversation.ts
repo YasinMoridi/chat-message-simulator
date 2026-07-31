@@ -17,30 +17,28 @@ export interface ConversationMetadata {
 }
 
 /**
- * A separate, real chat thread with a single participant - e.g. the "chat
- * with Sara" a clickable notification opens. Rendered with exactly two
- * participants ("you" + this one), completely independent from the main
- * conversation's message list. At most one of these exists per participant.
+ * A single, independent chat thread. Every chat is a peer of every other
+ * one - there is no "main" chat anymore. `memberIds` is a subset of
+ * `Conversation.participants` (the roster) chosen when the chat was
+ * created; each chat can have a completely different cast. A
+ * notification's `linkedChatId` (or `backNavigation.autoSelectChatId`) can
+ * open any other chat, and a message's `returnToParent` hands control back
+ * to whichever chat opened this one.
  */
-export interface SubConversation {
-  participantId: string
+export interface Chat {
+  id: string
+  /** Optional custom name; falls back to a name built from `memberIds` (see getChatTitle). */
+  name?: string
+  /** Subset of `participants` (the roster) who are actually chatting here. */
+  memberIds: string[]
   messages: Message[]
 }
 
 export interface Conversation {
   id: string
+  /** The full character roster - far more characters can exist here than are in any one chat. */
   participants: Participant[]
-  messages: Message[]
+  /** Every chat, fully independent and level with each other. */
+  chats: Chat[]
   metadata: ConversationMetadata
-  groupName?: string
-  /** Side-chats that clickable notifications can open. Keyed by participantId. */
-  subConversations?: SubConversation[]
-  /**
-   * Which of `participants` (the roster) are actually chatting in this main
-   * conversation right now - lets you keep a big cast of characters around
-   * without every one of them joining as soon as they exist. 2 members ->
-   * a direct chat; 3+ -> a group. Missing/empty means "everyone in the
-   * roster" (how conversations saved before this field existed behave).
-   */
-  memberIds?: string[]
 }

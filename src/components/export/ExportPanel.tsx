@@ -8,7 +8,6 @@ import { sizePresets } from "@/constants/exportPresets"
 import { exportNodeToImageSequence } from "@/utils/export"
 import { downloadConversationTranscript } from "@/utils/textExport"
 import { getSelfParticipantId } from "@/components/layout/ChatLayout"
-import { getConversationMembers } from "@/utils/helpers"
 import { useConversationStore } from "@/store/conversationStore"
 import {
   Dialog,
@@ -295,7 +294,7 @@ export const ExportPanel = ({
           variant="outline"
           className="w-full"
           onClick={() => {
-            const selfId = getSelfParticipantId(getConversationMembers(conversation), activeParticipantId)
+            const selfId = getSelfParticipantId(conversation.participants, activeParticipantId)
             downloadConversationTranscript(conversation, selfId, language === "fa" ? "fa" : "en")
           }}
         >

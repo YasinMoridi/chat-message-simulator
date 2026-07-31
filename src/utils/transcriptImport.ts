@@ -1,18 +1,27 @@
-import type { Conversation, Participant } from "@/types/conversation"
+import type { Chat, Conversation, Participant } from "@/types/conversation"
 import type { Message, MessageStatus } from "@/types/message"
 import { generateId } from "@/utils/helpers"
 
 /**
- * Reverse of buildConversationTranscript (src/utils/textExport.ts): takes the
- * narrative .txt transcript a user downloaded (or hand-wrote in the same
- * shape) and rebuilds a full Conversation - participants, the main thread,
- * and every linked sub-conversation - matching exactly what generated it.
+ * Reverse of buildConversationTranscript (src/utils/textExport.ts): takes
+ * the narrative .txt transcript a user downloaded (or hand-wrote in the
+ * same shape) and rebuilds a full Conversation - every participant and
+ * every chat - matching exactly what generated it.
  *
  * This is intentionally a mirror of renderThread's branching: the same
- * fixed label strings (in whichever of fa/en the file uses) mark thread
- * boundaries, notification/back-navigation jumps, and returns to the
- * parent thread, so we can walk the flat line list with a small context
- * stack instead of needing any lookahead grammar.
+ * fixed label strings (in whichever of fa/en the file uses) mark chat
+ * boundaries, notification/back-navigation jumps, and returns to whichever
+ * chat opened this one, so we can walk the flat line list with a small
+ * context stack instead of needing any lookahead grammar.
+ *
+ * Every chat in the project gets its own top-level "=== CHAT START ==="
+ * section (with the real content), and a linked notification/back-
+ * navigation jump into that SAME chat from elsewhere in the file only
+ * re-prints a "--- Chat begins here ---" marker with no content of its
+ * own (see textExport.ts) - so a chat referenced by title that's already
+ * been (or will be) seen as its own top-level section is only ever parsed
+ * once; only a nested reference to a title with no top-level section of
+ * its own gets its content parsed straight out of that nested block.
  */
 
 const PARTICIPANT_COLORS = ["#22c55e", "#0b84ff", "#f97316", "#a855f7", "#ef4444", "#14b8a6"]
@@ -24,8 +33,10 @@ interface LangLabels {
   headerPrefix: string
   participantsLinePrefix: string
   youWord: string
-  mainStart: string
-  mainEnd: string
+  chatStartPrefix: string
+  chatStartSuffix: string
+  chatEndPrefix: string
+  chatEndSuffix: string
   systemPrefix: string
   imagePrefix: string
   notificationLine: string
@@ -43,14 +54,13 @@ interface LangLabels {
   backManualOnly: string
   goesHome: string
   waitsAtHome: string
-  subThreadDeadEnd: string
+  linkedChatDeadEnd: string
   statusPrefix: string
   delayMid: string
-  jumpFromNotificationHint: string
   jumpFromHomeHint: string
-  subThreadHeaderHint: string
-  endOfSubHint: string
-  missingSubHint: string
+  linkedChatHeaderHint: string
+  endOfLinkedChatHint: string
+  missingChatHint: string
 }
 
 const LANGS: Record<Lang, LangLabels> = {
@@ -58,8 +68,10 @@ const LANGS: Record<Lang, LangLabels> = {
     headerPrefix: "متن کامل گفتگو: ",
     participantsLinePrefix: "شرکت‌کننده‌ها (",
     youWord: "شما",
-    mainStart: "=== شروع چت اصلی ===",
-    mainEnd: "=== پایان چت اصلی ===",
+    chatStartPrefix: "=== شروع چت: ",
+    chatStartSuffix: " ===",
+    chatEndPrefix: "=== پایان چت: ",
+    chatEndSuffix: " ===",
     systemPrefix: "[پیام سیستمی]",
     imagePrefix: "[عکس]: ",
     notificationLine: "🔔 نوتیفیکیشن نمایش داده می‌شه:",
@@ -77,21 +89,22 @@ const LANGS: Record<Lang, LangLabels> = {
     backManualOnly: "- فقط با زدن دستی دکمه‌ی برگشت از این چت خارج می‌شیم.",
     goesHome: "--- می‌ریم به صفحه‌ی لیست چت‌ها (Home) ---",
     waitsAtHome: "(صفحه‌ی لیست چت‌ها همینجا می‌مونه تا کسی دستی یه مخاطب رو بزنه)",
-    subThreadDeadEnd: "(هیچ برگشتی به چت اصلی تعریف نشده - داستان همینجا توی این چت جانبی تموم می‌شه)",
+    linkedChatDeadEnd: "(هیچ برگشتی تعریف نشده - داستان همینجا توی این چت تموم می‌شه)",
     statusPrefix: "وضعیت:",
     delayMid: "تاخیر قبل از این پیام:",
-    jumpFromNotificationHint: "با زدن این نوتیف",
     jumpFromHomeHint: "توی صفحه‌ی لیست چت‌ها",
-    subThreadHeaderHint: "شروع شد",
-    endOfSubHint: "پایان چت جداگانه",
-    missingSubHint: "هشدار: قرار بود چت جداگانه",
+    linkedChatHeaderHint: "از اینجا شروع شد",
+    endOfLinkedChatHint: "پایان چت",
+    missingChatHint: "هشدار: قرار بود چتی",
   },
   en: {
     headerPrefix: "Full conversation transcript: ",
     participantsLinePrefix: "Participants (",
     youWord: "You",
-    mainStart: "=== MAIN CHAT START ===",
-    mainEnd: "=== MAIN CHAT END ===",
+    chatStartPrefix: "=== CHAT START: ",
+    chatStartSuffix: " ===",
+    chatEndPrefix: "=== CHAT END: ",
+    chatEndSuffix: " ===",
     systemPrefix: "[system message]",
     imagePrefix: "[image]: ",
     notificationLine: "🔔 Notification banner appears:",
@@ -109,22 +122,21 @@ const LANGS: Record<Lang, LangLabels> = {
     backManualOnly: "- Only leaves this chat if the back button is tapped manually.",
     goesHome: "--- Goes to the chat-list (Home) screen ---",
     waitsAtHome: "(The chat-list screen just sits here until a contact is tapped manually)",
-    subThreadDeadEnd: "(No return to the main chat is set - the story ends here in this side chat)",
+    linkedChatDeadEnd: "(No return is set - the story ends here in this chat)",
     statusPrefix: "status:",
     delayMid: "delay before this message:",
-    jumpFromNotificationHint: "Tapping this notification jumps into",
     jumpFromHomeHint: "On the chat-list screen,",
-    subThreadHeaderHint: "begins ---",
-    endOfSubHint: "End of separate chat",
-    missingSubHint: "was supposed to open",
+    linkedChatHeaderHint: "begins here ---",
+    endOfLinkedChatHint: "End of chat",
+    missingChatHint: "was supposed to open",
   },
 }
 
 const detectLanguage = (lines: string[]): Lang => {
   for (const raw of lines) {
     const line = raw.trim()
-    if (line === LANGS.fa.mainStart) return "fa"
-    if (line === LANGS.en.mainStart) return "en"
+    if (line.startsWith(LANGS.fa.chatStartPrefix)) return "fa"
+    if (line.startsWith(LANGS.en.chatStartPrefix)) return "en"
   }
   return "fa"
 }
@@ -152,15 +164,22 @@ const parseTimestamp = (raw: string): string => {
   return date.toISOString()
 }
 
-const isEndOfSubConversation = (line: string, L: LangLabels) =>
-  line.startsWith("---") && line.includes(L.endOfSubHint)
+const isChatStart = (line: string, L: LangLabels) =>
+  line.startsWith(L.chatStartPrefix) && line.endsWith(L.chatStartSuffix)
+const chatStartTitle = (line: string, L: LangLabels) =>
+  line.slice(L.chatStartPrefix.length, line.length - L.chatStartSuffix.length).trim()
 
-const isSubThreadHeader = (line: string, L: LangLabels) =>
-  line.startsWith("---") && line.includes(L.subThreadHeaderHint)
+const isChatEnd = (line: string, L: LangLabels) => line.startsWith(L.chatEndPrefix) && line.endsWith(L.chatEndSuffix)
 
-const isMissingSubConversation = (line: string, L: LangLabels) => line.includes(L.missingSubHint)
+const isEndOfLinkedChat = (line: string, L: LangLabels) =>
+  line.startsWith("---") && line.includes(L.endOfLinkedChatHint)
 
-const isJumpLine = (line: string, L: LangLabels) => line.startsWith(">>>") && line.endsWith(">>>")
+const isLinkedChatHeader = (line: string, L: LangLabels) =>
+  line.startsWith("---") && line.includes(L.linkedChatHeaderHint)
+
+const isMissingChat = (line: string, L: LangLabels) => line.includes(L.missingChatHint)
+
+const isJumpLine = (line: string) => line.startsWith(">>>") && line.endsWith(">>>")
 
 const isJumpFromHome = (line: string, L: LangLabels) => line.includes(L.jumpFromHomeHint)
 
@@ -194,9 +213,7 @@ const parseParticipantsLine = (line: string, L: LangLabels): ParsedMember[] => {
 const parseStatusDelayLine = (line: string, L: LangLabels): { status: MessageStatus; delayMs?: number } => {
   const withoutPrefix = line.slice(L.statusPrefix.length).trim()
   const midIdx = withoutPrefix.indexOf(L.delayMid)
-  const statusWord = (midIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, midIdx))
-    .replace(/\|$/, "")
-    .trim()
+  const statusWord = (midIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, midIdx)).replace(/\|$/, "").trim()
   const validStatuses: MessageStatus[] = ["sent", "delivered", "read"]
   const status = (validStatuses as string[]).includes(statusWord) ? (statusWord as MessageStatus) : "sent"
   const delayMs = midIdx === -1 ? undefined : extractMs(withoutPrefix.slice(midIdx))
@@ -211,7 +228,7 @@ export interface TranscriptImportResult {
 /**
  * Parses a narrative transcript (as produced by buildConversationTranscript)
  * back into a full Conversation. Throws with a user-facing message if the
- * text doesn't contain a recognizable main-chat marker at all.
+ * text doesn't contain a recognizable chat-start marker at all.
  */
 export const parseConversationTranscript = (rawText: string): TranscriptImportResult => {
   const warnings: string[] = []
@@ -219,29 +236,22 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
   const lang = detectLanguage(lines)
   const L = LANGS[lang]
 
-  let title = ""
-  let declaredMembers: ParsedMember[] = []
-  let mainStartIdx = -1
+  const trimmedLines = lines.map((line) => line.trim())
 
-  for (let idx = 0; idx < lines.length; idx += 1) {
-    const line = lines[idx].trim()
-    if (!title && line.startsWith(L.headerPrefix)) {
-      title = line.slice(L.headerPrefix.length).trim()
-    }
-    if (line.startsWith(L.participantsLinePrefix)) {
-      declaredMembers = parseParticipantsLine(line, L)
-    }
-    if (line === L.mainStart) {
-      mainStartIdx = idx
-      break
-    }
-  }
+  // Pass 1: find every top-level "=== CHAT START: TITLE ===" marker so
+  // links to a chat title that appears later in the file (or the same
+  // title appearing again as a nested link) can still be resolved to the
+  // one real chat, instead of accidentally duplicating its content.
+  const topLevelTitles: string[] = []
+  trimmedLines.forEach((line) => {
+    if (isChatStart(line, L)) topLevelTitles.push(chatStartTitle(line, L))
+  })
 
-  if (mainStartIdx === -1) {
+  if (topLevelTitles.length === 0) {
     throw new Error(
       lang === "fa"
-        ? "خطی به شکل «=== شروع چت اصلی ===» توی متن پیدا نشد. مطمئن شو کل فایل ترنسکریپت رو پیست/آپلود کردی."
-        : 'Could not find a "=== MAIN CHAT START ===" line. Make sure you pasted/uploaded the full transcript file.',
+        ? "خطی به شکل «=== شروع چت: ... ===» توی متن پیدا نشد. مطمئن شو کل فایل ترنسکریپت رو پیست/آپلود کردی."
+        : 'Could not find a "=== CHAT START: ... ===" line. Make sure you pasted/uploaded the full transcript file.',
     )
   }
 
@@ -259,12 +269,6 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
     return id
   }
 
-  declaredMembers.forEach((member) => {
-    const id = ensureParticipant(member.name)
-    if (member.isSelf) selfId = id
-  })
-  const declaredMemberIds = declaredMembers.map((member) => nameToId.get(member.name.trim().toLowerCase())!)
-
   const resolveSenderId = (name: string): string => {
     if (name.trim() === L.youWord) {
       if (!selfId) selfId = ensureParticipant(L.youWord)
@@ -273,22 +277,74 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
     return ensureParticipant(name)
   }
 
-  const mainMessages: Message[] = []
-  const mainSenderIds = new Set<string>()
-  const subConversations = new Map<string, Message[]>()
+  interface ChatBuild {
+    id: string
+    title: string
+    declaredMemberIds: string[]
+    senderIds: Set<string>
+    messages: Message[]
+  }
+
+  // One build entry per unique top-level title - the canonical home for
+  // that chat's content, whichever occurrence (top-level or nested) we
+  // end up actually parsing lines from first.
+  const chatsByTitle = new Map<string, ChatBuild>()
+  topLevelTitles.forEach((title) => {
+    if (chatsByTitle.has(title)) return
+    chatsByTitle.set(title, { id: generateId(), title, declaredMemberIds: [], senderIds: new Set(), messages: [] })
+  })
+
+  const getOrCreateChatByTitle = (title: string): ChatBuild => {
+    const existing = chatsByTitle.get(title)
+    if (existing) return existing
+    const created: ChatBuild = { id: generateId(), title, declaredMemberIds: [], senderIds: new Set(), messages: [] }
+    chatsByTitle.set(title, created)
+    return created
+  }
 
   interface Ctx {
-    messages: Message[]
-    isMain: boolean
+    chat: ChatBuild
+    /** True once this chat's canonical content has already been parsed elsewhere - skip lines, don't record messages. */
+    isDuplicate: boolean
   }
-  const stack: Ctx[] = [{ messages: mainMessages, isMain: true }]
 
   const messageHeaderRe = /^\[(\d+)\]\s+(.+?)\s+-\s+(.+)$/
-  const n = lines.length
-  let i = mainStartIdx + 1
+  const n = trimmedLines.length
+  const alreadyParsedTitles = new Set<string>()
 
-  outer: while (i < n) {
-    const line = lines[i].trim()
+  let i = 0
+  const stack: Ctx[] = []
+
+  while (i < n) {
+    const line = trimmedLines[i]
+
+    if (stack.length === 0) {
+      // Looking for the next top-level chat section.
+      if (!isChatStart(line, L)) {
+        i += 1
+        continue
+      }
+      const title = chatStartTitle(line, L)
+      const chat = getOrCreateChatByTitle(title)
+      const isDuplicate = alreadyParsedTitles.has(title)
+      alreadyParsedTitles.add(title)
+      stack.push({ chat, isDuplicate })
+      i += 1
+      // Right after chatStart: an optional "Participants (...): ..." line.
+      if (i < n && trimmedLines[i].startsWith(L.participantsLinePrefix)) {
+        const declared = parseParticipantsLine(trimmedLines[i], L)
+        if (!isDuplicate) {
+          declared.forEach((member) => {
+            const id = ensureParticipant(member.name)
+            if (member.isSelf) selfId = id
+            chat.declaredMemberIds.push(id)
+          })
+        }
+        i += 1
+      }
+      continue
+    }
+
     const top = stack[stack.length - 1]
 
     if (!line) {
@@ -296,16 +352,18 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
       continue
     }
 
-    if (top.isMain && line === L.mainEnd) {
-      break
+    if (stack.length === 1 && isChatEnd(line, L)) {
+      stack.pop()
+      i += 1
+      continue
     }
 
-    if (!top.isMain) {
-      if (line === L.subThreadDeadEnd) {
+    if (stack.length > 1) {
+      if (line === L.linkedChatDeadEnd) {
         i += 1
         continue
       }
-      if (isEndOfSubConversation(line, L)) {
+      if (isEndOfLinkedChat(line, L)) {
         stack.pop()
         i += 1
         continue
@@ -313,22 +371,26 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
     }
 
     if (line.startsWith("<<<")) {
-      const last = top.messages[top.messages.length - 1]
-      if (last) last.returnToParent = true
+      if (!top.isDuplicate) {
+        const last = top.chat.messages[top.chat.messages.length - 1]
+        if (last) last.returnToParent = true
+      }
       i += 1
       continue
     }
 
     const headerMatch = line.match(messageHeaderRe)
     if (!headerMatch) {
-      warnings.push(lang === "fa" ? `یک خط ناشناخته نادیده گرفته شد: ${line.slice(0, 60)}` : `Skipped an unrecognized line: ${line.slice(0, 60)}`)
+      warnings.push(
+        lang === "fa" ? `یک خط ناشناخته نادیده گرفته شد: ${line.slice(0, 60)}` : `Skipped an unrecognized line: ${line.slice(0, 60)}`,
+      )
       i += 1
       continue
     }
 
     const [, , tsRaw, senderNameRaw] = headerMatch
     const senderId = resolveSenderId(senderNameRaw.trim())
-    if (top.isMain) mainSenderIds.add(senderId)
+    if (!top.isDuplicate) top.chat.senderIds.add(senderId)
 
     const message: Message = {
       id: generateId(),
@@ -344,9 +406,9 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
     // Gathers every line that belongs to THIS message - type-specific
     // content, the status/delay line, hidden flag, back-navigation lines -
     // stopping (without consuming) as soon as we hit the next message
-    // header or any thread-transition/closing marker.
+    // header or any chat-transition/closing marker.
     while (i < n) {
-      const bl = lines[i].trim()
+      const bl = trimmedLines[i]
       if (!bl) {
         i += 1
         continue
@@ -355,13 +417,13 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
         messageHeaderRe.test(bl) ||
         bl.startsWith(">>>") ||
         bl.startsWith("<<<") ||
-        bl === L.mainEnd ||
+        isChatEnd(bl, L) ||
         bl === L.goesHome ||
         bl === L.waitsAtHome ||
-        bl === L.subThreadDeadEnd ||
-        isSubThreadHeader(bl, L) ||
-        isEndOfSubConversation(bl, L) ||
-        isMissingSubConversation(bl, L)
+        bl === L.linkedChatDeadEnd ||
+        isLinkedChatHeader(bl, L) ||
+        isEndOfLinkedChat(bl, L) ||
+        isMissingChat(bl, L)
       ) {
         break
       }
@@ -474,28 +536,28 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
     }
 
     message.content = contentLines.join("\n")
-    top.messages.push(message)
+    if (!top.isDuplicate) top.chat.messages.push(message)
 
     // Trailing transition markers between this message and whatever comes
-    // next: a notification/back-nav jump into a linked thread, or nothing.
+    // next: a notification/back-nav jump into a linked chat, or nothing.
     let pendingIsHomeAuto = false
     while (i < n) {
-      const ml = lines[i].trim()
+      const ml = trimmedLines[i]
       if (!ml) {
         i += 1
         continue
       }
-      if (isJumpLine(ml, L)) {
+      if (isJumpLine(ml)) {
         if (isJumpFromHome(ml, L)) pendingIsHomeAuto = true
         i += 1
         continue
       }
-      if (isMissingSubConversation(ml, L)) {
+      if (isMissingChat(ml, L)) {
         const name = extractQuoted(ml, lang)
         warnings.push(
           lang === "fa"
-            ? `چت جداگانه‌ای برای «${name ?? "?"}» لینک شده بود ولی توی متن پیدا نشد.`
-            : `A separate chat for "${name ?? "?"}" was linked but not found in the text.`,
+            ? `چتی به اسم «${name ?? "?"}» لینک شده بود ولی توی متن پیدا نشد.`
+            : `A chat named "${name ?? "?"}" was linked but not found in the text.`,
         )
         i += 1
         continue
@@ -504,28 +566,32 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
         i += 1
         continue
       }
-      if (isSubThreadHeader(ml, L)) {
+      if (isLinkedChatHeader(ml, L)) {
         const name = extractQuoted(ml, lang)
         if (name) {
-          const pid = ensureParticipant(name)
-          if (pendingIsHomeAuto) {
-            message.backNavigation = { ...(message.backNavigation ?? { enabled: true }), autoSelectParticipantId: pid }
-          } else {
-            message.linkedParticipantId = pid
+          const linkedChat = getOrCreateChatByTitle(name)
+          const isDuplicate = alreadyParsedTitles.has(name)
+          alreadyParsedTitles.add(name)
+          if (!top.isDuplicate) {
+            if (pendingIsHomeAuto) {
+              message.backNavigation = { ...(message.backNavigation ?? { enabled: true }), autoSelectChatId: linkedChat.id }
+            } else {
+              message.linkedChatId = linkedChat.id
+            }
           }
-          if (!subConversations.has(pid)) subConversations.set(pid, [])
-          stack.push({ messages: subConversations.get(pid)!, isMain: false })
+          stack.push({ chat: linkedChat, isDuplicate })
         }
         i += 1
-        continue outer
+        break
       }
       break
     }
   }
 
   if (!selfId) {
-    if (declaredMemberIds.length > 0) {
-      selfId = declaredMemberIds[0]
+    const firstDeclared = Array.from(chatsByTitle.values()).find((c) => c.declaredMemberIds.length > 0)
+    if (firstDeclared) {
+      selfId = firstDeclared.declaredMemberIds[0]
     } else if (participants.length > 0) {
       selfId = participants[0].id
     }
@@ -533,36 +599,38 @@ export const parseConversationTranscript = (rawText: string): TranscriptImportRe
       warnings.push(
         lang === "fa"
           ? "مشخص نبود کدوم شرکت‌کننده «شما» هست؛ اولین نفر به‌عنوان شما در نظر گرفته شد."
-          : "Couldn't tell which participant was \"you\"; the first one was used as you.",
+          : 'Couldn\'t tell which participant was "you"; the first one was used as you.',
       )
     }
   }
 
-  const memberIds = declaredMemberIds.length > 0 ? declaredMemberIds : Array.from(mainSenderIds)
-  if (selfId && !memberIds.includes(selfId)) memberIds.unshift(selfId)
-
   // Self needs to be participants[0] - that's what the app treats as "you"
-  // for both direct chats (loadConversation points activeParticipantId at
-  // participants[0]) and groups (always participants[0]).
+  // (loadConversation points activeParticipantId at participants[0]).
   const ordered = selfId
     ? [participants.find((p) => p.id === selfId)!, ...participants.filter((p) => p.id !== selfId)]
     : participants
 
-  const isGroup = memberIds.length > 2
+  const chats: Chat[] = Array.from(chatsByTitle.values()).map((build) => {
+    const memberIds =
+      build.declaredMemberIds.length > 0 ? build.declaredMemberIds : Array.from(build.senderIds)
+    if (selfId && !memberIds.includes(selfId)) memberIds.unshift(selfId)
+    const isGroup = memberIds.length > 2
+    return {
+      id: build.id,
+      name: isGroup ? build.title || undefined : undefined,
+      memberIds,
+      messages: build.messages,
+    }
+  })
+
   const conversation: Conversation = {
     id: generateId(),
     participants: ordered,
-    messages: mainMessages,
+    chats,
     metadata: {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     },
-    groupName: isGroup ? title || "Group Chat" : undefined,
-    subConversations:
-      subConversations.size > 0
-        ? Array.from(subConversations.entries()).map(([participantId, messages]) => ({ participantId, messages }))
-        : undefined,
-    memberIds,
   }
 
   return { conversation, warnings }

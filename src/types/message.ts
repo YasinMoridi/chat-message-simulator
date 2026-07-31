@@ -54,32 +54,28 @@ export interface Message {
    */
   notificationAutoOpenDelayMs?: number
   /**
-   * Only meaningful when notificationClickable is true. Id of the
-   * participant this notification actually belongs to. When set, tapping
-   * (or auto-tapping) the banner opens a real, separate chat containing
-   * only "you" and this participant - built from that participant's entry
-   * in conversation.subConversations - instead of just revealing the rest
-   * of the current conversation.
+   * Only meaningful when notificationClickable is true. Id of the chat
+   * (conversation.chats) this notification actually belongs to. When set,
+   * tapping (or auto-tapping) the banner opens that chat directly - built
+   * from its own independent member list and messages - instead of just
+   * revealing the rest of the current chat.
    */
-  linkedParticipantId?: string
+  linkedChatId?: string
   /**
-   * Only meaningful for a message that lives inside a sub-conversation
-   * (conversation.subConversations). When true, once this message finishes
-   * revealing, playback closes this side-chat and resumes the parent
-   * conversation right where it paused. Ignored everywhere else - if no
-   * message in a sub-conversation sets this, playback simply ends inside
-   * that side-chat once its messages run out.
+   * Only meaningful for a message that lives inside a chat that was opened
+   * via a notification's linkedChatId (or backNavigation's
+   * autoSelectChatId). When true, once this message finishes revealing,
+   * playback closes this chat and resumes whichever chat opened it, right
+   * where it paused. Ignored everywhere else - if no message in a chat sets
+   * this, playback simply ends inside that chat once its messages run out.
    */
   returnToParent?: boolean
   /**
    * Lets tapping the chat header's back button - while this is the last
-   * message currently shown, in the main conversation or a linked
-   * side-chat - leave this chat for a simulated "recent chats" home
-   * screen instead of doing nothing, mimicking backing out of a chat on a
-   * real phone. Tapping a contact on that home screen opens a real,
-   * separate chat with them, built from their entry in
-   * conversation.subConversations - same mechanism a clickable
-   * notification uses.
+   * message currently shown - leave the current chat for a simulated
+   * "recent chats" home screen instead of doing nothing, mimicking backing
+   * out of a chat on a real phone. Tapping a contact on that home screen
+   * opens the real, separate chat that contact belongs to.
    */
   backNavigation?: {
     enabled: boolean
@@ -98,16 +94,15 @@ export interface Message {
      */
     autoOpenDelayMs?: number
     /**
-     * Only meaningful when autoOpen is true. Id of the participant whose
-     * row on the home screen should be "tapped" automatically - after
-     * autoSelectDelayMs once the home screen appears - opening a real,
-     * separate chat with them instead of waiting for a real tap. Leave
-     * unset to have the home screen just sit there until someone taps a
-     * contact themselves.
+     * Only meaningful when autoOpen is true. Id of the chat whose row on
+     * the home screen should be "tapped" automatically - after
+     * autoSelectDelayMs once the home screen appears - opening that chat
+     * instead of waiting for a real tap. Leave unset to have the home
+     * screen just sit there until someone taps a contact themselves.
      */
-    autoSelectParticipantId?: string
+    autoSelectChatId?: string
     /**
-     * Only meaningful when autoSelectParticipantId is set. How long (in
+     * Only meaningful when autoSelectChatId is set. How long (in
      * milliseconds) after the home screen appears before it auto-taps
      * that contact's row.
      */
@@ -116,9 +111,8 @@ export interface Message {
 }
 
 /**
- * Shared shape for "here's a message to add/update" payloads - used by both
- * the main conversation and any sub-conversation, so MessageForm doesn't
- * need to know which one it's feeding.
+ * Shared shape for "here's a message to add/update" payloads - used by
+ * every chat, so MessageForm doesn't need to know which one it's feeding.
  */
 export interface MessageDraftPayload {
   senderId: string
@@ -133,7 +127,7 @@ export interface MessageDraftPayload {
   notificationOpenDelayMs?: number
   notificationAutoOpen?: boolean
   notificationAutoOpenDelayMs?: number
-  linkedParticipantId?: string
+  linkedChatId?: string
   returnToParent?: boolean
   backNavigation?: Message["backNavigation"]
 }
@@ -146,7 +140,7 @@ export const DEFAULT_NOTIFICATION_OPEN_DELAY_MS = 700
 export const DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS = 1500
 /** Default wait (ms) after a message finishes before backNavigation.autoOpen leaves for the home screen. */
 export const DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS = 900
-/** Default wait (ms) after the home screen appears before backNavigation.autoSelectParticipantId auto-taps a contact. */
+/** Default wait (ms) after the home screen appears before backNavigation.autoSelectChatId auto-taps a contact. */
 export const DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS = 900
 
 /**

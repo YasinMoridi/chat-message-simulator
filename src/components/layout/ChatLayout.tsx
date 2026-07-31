@@ -1,13 +1,26 @@
-import type { Conversation, Participant } from "@/types/conversation"
+import type { Participant } from "@/types/conversation"
+import type { Message } from "@/types/message"
 import type { LayoutConfig, LayoutId, LayoutTheme } from "@/types/layout"
 import { ChatHeader } from "@/components/chat/ChatHeader"
 import { ConversationView } from "@/components/chat/ConversationView"
 import { MessageInput } from "@/components/chat/MessageInput"
-import { ChatListScreen, type ChatListPreview } from "@/components/chat/ChatListScreen"
-import { getConversationMembers, getConversationTitle } from "@/utils/helpers"
+import { ChatListScreen, type ChatListPreview, type ChatListEntry } from "@/components/chat/ChatListScreen"
+import { getChatTitle } from "@/utils/helpers"
+
+/**
+ * Everything ChatLayout needs to render one chat - already resolved to just
+ * that chat's own members and messages by the caller (MainLayout), since a
+ * "conversation" in this app can now hold many independent chats at once.
+ */
+export interface ChatLayoutConversation {
+  participants: Participant[]
+  messages: Message[]
+  /** This specific chat's own custom name, if it has one. */
+  chatName?: string
+}
 
 interface ChatLayoutProps {
-  conversation: Conversation
+  conversation: ChatLayoutConversation
   layout: LayoutConfig
   theme: LayoutTheme
   showChrome: boolean
@@ -35,12 +48,12 @@ interface ChatLayoutProps {
    * to instead - every other prop below this one is only used in that mode.
    */
   screen?: "chat" | "home"
-  /** Contacts to list on the home screen - normally every participant except "you". */
-  homeParticipants?: Participant[]
-  /** Last-message preview per participant id, for the home screen's rows. */
+  /** Every other chat to list on the home screen. */
+  homeChats?: ChatListEntry[]
+  /** Last-message preview per chat id, for the home screen's rows. */
   homePreviews?: Record<string, ChatListPreview>
-  /** Called with a participant id when their row is tapped on the home screen. */
-  onSelectHomeParticipant?: (participantId: string) => void
+  /** Called with a chat id when its row is tapped on the home screen. */
+  onSelectHomeChat?: (chatId: string) => void
   /**
    * Called when the chat screen's back arrow is tapped. Only wired up when
    * the currently-shown message has backNavigation.enabled.
@@ -48,7 +61,7 @@ interface ChatLayoutProps {
   onBack?: () => void
 }
 
-const groupStatusLabel = (participants: Conversation["participants"]) => {
+const groupStatusLabel = (participants: Participant[]) => {
   const typing = participants.find((participant) => participant.status === "typing")
   if (typing) return `${typing.name} is typing...`
   const online = participants.filter((participant) => participant.status === "online")
@@ -71,10 +84,7 @@ const directStatusLabel = (status?: string, layoutId?: LayoutId) => {
   return "offline"
 }
 
-export const getSelfParticipantId = (
-  participants: Conversation["participants"],
-  activeParticipantId: string,
-) => {
+export const getSelfParticipantId = (participants: Participant[], activeParticipantId: string) => {
   if (participants.length === 2) {
     // In direct chats, treat the active participant as "you".
     const active = participants.find((participant) => participant.id === activeParticipantId)
@@ -99,17 +109,15 @@ export const ChatLayout = ({
   typingPhaseMs,
   typingDraftText,
   screen = "chat",
-  homeParticipants = [],
+  homeChats = [],
   homePreviews,
-  onSelectHomeParticipant,
+  onSelectHomeChat,
   onBack,
 }: ChatLayoutProps) => {
   const bodyFont = `Roboto, ${layout.fonts.body}`
   const headerFont = `Roboto, ${layout.fonts.header}`
-  // The roster (conversation.participants) can hold far more characters
-  // than are actually chatting right now - only `members` decides whether
-  // this is a direct chat or a group, and who shows in the header.
-  const members = getConversationMembers(conversation)
+  // The caller already resolved this down to just this chat's own members.
+  const members = conversation.participants
   const selfId = getSelfParticipantId(members, activeParticipantId)
   // When "you" are the one being simulated as typing, show it as real
   // keystrokes in the input instead of the dots bubble in the chat log.
@@ -119,7 +127,7 @@ export const ChatLayout = ({
   const headerParticipant = !isGroup
     ? members.find((participant) => participant.id !== selfId) ?? members[0]
     : undefined
-  const title = isGroup ? getConversationTitle(conversation) : headerParticipant?.name ?? "New Chat"
+  const title = isGroup ? getChatTitle(members, conversation.chatName) : headerParticipant?.name ?? "New Chat"
   const subtitle = isGroup
     ? groupStatusLabel(members)
     : directStatusLabel(headerParticipant?.status, layout.id)
@@ -164,10 +172,10 @@ export const ChatLayout = ({
       {theme.pattern ? <div className="chat-layer chat-bg-pattern" aria-hidden="true" /> : null}
       {screen === "home" ? (
         <ChatListScreen
-          participants={homeParticipants}
+          chats={homeChats}
           previews={homePreviews}
           theme={theme}
-          onSelectParticipant={onSelectHomeParticipant ?? (() => {})}
+          onSelectChat={onSelectHomeChat ?? (() => {})}
         />
       ) : (
         <>

@@ -1,11 +1,7 @@
 import { format } from "date-fns"
-import type { Conversation, Participant } from "@/types/conversation"
+import type { Chat, Conversation, Participant } from "@/types/conversation"
 import type { Message } from "@/types/message"
-import {
-  getConversationMembers,
-  getConversationTitle,
-  isGroupConversation,
-} from "@/utils/helpers"
+import { getChatMembers, getChatTitle, isGroupChat } from "@/utils/helpers"
 
 export type TranscriptLanguage = "fa" | "en"
 
@@ -16,7 +12,8 @@ interface Labels {
   you: string
   group: string
   direct: string
-  mainThreadStart: string
+  chatStart: (title: string) => string
+  chatEnd: (title: string) => string
   senderStatus: (status: string) => string
   delay: (ms: number) => string
   hidden: string
@@ -30,20 +27,19 @@ interface Labels {
   notificationClickableManual: string
   notificationAutoOpen: (delayMs: number) => string
   notificationOpenDelay: (delayMs: number) => string
-  jumpToSubFromNotification: (name: string) => string
-  jumpToSubFromHomeAuto: (name: string, delayMs: number) => string
-  jumpToSubFromHomeManual: (name: string) => string
+  jumpToChatFromNotification: (name: string) => string
+  jumpToChatFromHomeAuto: (name: string, delayMs: number) => string
+  jumpToChatFromHomeManual: (name: string) => string
   backNavAvailable: string
   backNavAutoLeaves: (delayMs: number) => string
   backNavManualOnly: string
   goesHome: string
   waitsAtHome: string
-  subThreadHeader: (name: string) => string
+  linkedChatHeader: (name: string) => string
   returnToParent: string
-  subThreadDeadEnd: string
-  endOfSubConversation: (name: string) => string
-  missingSubConversation: (name: string) => string
-  endOfMain: string
+  linkedChatDeadEnd: string
+  endOfLinkedChat: (name: string) => string
+  missingChat: (name: string) => string
 }
 
 const participantName = (participants: Participant[], id: string, selfId: string, you: string) => {
@@ -59,7 +55,8 @@ const LABELS: Record<TranscriptLanguage, Labels> = {
     you: "شما",
     group: "گروهی",
     direct: "دو نفره",
-    mainThreadStart: "=== شروع چت اصلی ===",
+    chatStart: (title) => `=== شروع چت: ${title} ===`,
+    chatEnd: (title) => `=== پایان چت: ${title} ===`,
     senderStatus: (status) => `وضعیت: ${status}`,
     delay: (ms) => `تاخیر قبل از این پیام: ${ms}ms`,
     hidden: "(این پیام مخفیه و توی پخش نمایش داده نمی‌شه)",
@@ -73,24 +70,22 @@ const LABELS: Record<TranscriptLanguage, Labels> = {
     notificationClickableManual: "  - قابل کلیکه (باید دستی روش زده بشه تا باز شه).",
     notificationAutoOpen: (ms) => `  - خودش بعد از ${ms}ms خودکار باز می‌شه (لازم نیست کسی بزنه روش).`,
     notificationOpenDelay: (ms) => `  - بعد از زده شدن، ${ms}ms طول می‌کشه تا چت واقعا باز بشه.`,
-    jumpToSubFromNotification: (name) =>
-      `\n>>> با زدن این نوتیف، می‌ریم توی یه چت جدا و مستقل با «${name}» >>>`,
-    jumpToSubFromHomeAuto: (name, ms) =>
+    jumpToChatFromNotification: (name) =>
+      `\n>>> با زدن این نوتیف، می‌ریم توی یه چت جدا و مستقل: «${name}» >>>`,
+    jumpToChatFromHomeAuto: (name, ms) =>
       `\n>>> توی صفحه‌ی لیست چت‌ها، بعد از ${ms}ms خودکار روی «${name}» زده می‌شه و چتش باز می‌شه >>>`,
-    jumpToSubFromHomeManual: (name) =>
+    jumpToChatFromHomeManual: (name) =>
       `\n>>> از صفحه‌ی لیست چت‌ها می‌شه رفت توی چت «${name}» (نیاز به کلیک دستی داره) >>>`,
     backNavAvailable: "  - دکمه‌ی برگشت (Back) روی هدر فعاله - می‌شه از این چت زد بیرون.",
     backNavAutoLeaves: (ms) => `  - بعد از ${ms}ms خودکار می‌زنه بیرون و می‌ره صفحه‌ی لیست چت‌ها (Home).`,
     backNavManualOnly: "  - فقط با زدن دستی دکمه‌ی برگشت از این چت خارج می‌شیم.",
     goesHome: "  --- می‌ریم به صفحه‌ی لیست چت‌ها (Home) ---",
     waitsAtHome: "  (صفحه‌ی لیست چت‌ها همینجا می‌مونه تا کسی دستی یه مخاطب رو بزنه)",
-    subThreadHeader: (name) => `\n--- چت جداگانه با «${name}» شروع شد ---`,
-    returnToParent: "\n<<< این پیام برمی‌گردونه به چت اصلی، دقیقا از همونجایی که مونده بود <<<",
-    subThreadDeadEnd: "(هیچ برگشتی به چت اصلی تعریف نشده - داستان همینجا توی این چت جانبی تموم می‌شه)",
-    endOfSubConversation: (name) => `--- پایان چت جداگانه با «${name}» ---\n`,
-    missingSubConversation: (name) =>
-      `  [!] هشدار: قرار بود چت جداگانه‌ای با «${name}» باز بشه ولی همچین چتی تعریف نشده.`,
-    endOfMain: "=== پایان چت اصلی ===",
+    linkedChatHeader: (name) => `\n--- چت «${name}» از اینجا شروع شد ---`,
+    returnToParent: "\n<<< این پیام برمی‌گردونه به چتی که این‌جا رو باز کرده بود، دقیقا از همونجایی که مونده بود <<<",
+    linkedChatDeadEnd: "(هیچ برگشتی تعریف نشده - داستان همینجا توی این چت تموم می‌شه)",
+    endOfLinkedChat: (name) => `--- پایان چت «${name}» ---\n`,
+    missingChat: (name) => `  [!] هشدار: قرار بود چتی به اسم «${name}» باز بشه ولی همچین چتی تعریف نشده.`,
   },
   en: {
     header: (title) => `Full conversation transcript: ${title}`,
@@ -99,7 +94,8 @@ const LABELS: Record<TranscriptLanguage, Labels> = {
     you: "You",
     group: "group",
     direct: "direct",
-    mainThreadStart: "=== MAIN CHAT START ===",
+    chatStart: (title) => `=== CHAT START: ${title} ===`,
+    chatEnd: (title) => `=== CHAT END: ${title} ===`,
     senderStatus: (status) => `status: ${status}`,
     delay: (ms) => `delay before this message: ${ms}ms`,
     hidden: "(this message is hidden and is not shown during playback)",
@@ -113,24 +109,22 @@ const LABELS: Record<TranscriptLanguage, Labels> = {
     notificationClickableManual: "  - clickable (needs a manual tap to open).",
     notificationAutoOpen: (ms) => `  - auto-taps itself after ${ms}ms (no manual tap needed).`,
     notificationOpenDelay: (ms) => `  - after being tapped, takes ${ms}ms to actually open the chat.`,
-    jumpToSubFromNotification: (name) =>
-      `\n>>> Tapping this notification jumps into a separate, standalone chat with "${name}" >>>`,
-    jumpToSubFromHomeAuto: (name, ms) =>
+    jumpToChatFromNotification: (name) =>
+      `\n>>> Tapping this notification jumps into a separate, standalone chat: "${name}" >>>`,
+    jumpToChatFromHomeAuto: (name, ms) =>
       `\n>>> On the chat-list screen, "${name}" is auto-tapped after ${ms}ms, opening their chat >>>`,
-    jumpToSubFromHomeManual: (name) =>
-      `\n>>> From the chat-list screen, "${name}"'s chat can be opened (needs a manual tap) >>>`,
+    jumpToChatFromHomeManual: (name) =>
+      `\n>>> From the chat-list screen, "${name}" can be opened (needs a manual tap) >>>`,
     backNavAvailable: "  - Back button is enabled on the header - this chat can be exited here.",
     backNavAutoLeaves: (ms) => `  - Automatically leaves for the chat-list (Home) screen after ${ms}ms.`,
     backNavManualOnly: "  - Only leaves this chat if the back button is tapped manually.",
     goesHome: "  --- Goes to the chat-list (Home) screen ---",
     waitsAtHome: "  (The chat-list screen just sits here until a contact is tapped manually)",
-    subThreadHeader: (name) => `\n--- Separate chat with "${name}" begins ---`,
-    returnToParent: "\n<<< This message returns to the main chat, exactly where it left off <<<",
-    subThreadDeadEnd: "(No return to the main chat is set - the story ends here in this side chat)",
-    endOfSubConversation: (name) => `--- End of separate chat with "${name}" ---\n`,
-    missingSubConversation: (name) =>
-      `  [!] Warning: a separate chat with "${name}" was supposed to open, but no such chat exists.`,
-    endOfMain: "=== MAIN CHAT END ===",
+    linkedChatHeader: (name) => `\n--- Chat "${name}" begins here ---`,
+    returnToParent: "\n<<< This message returns to whichever chat opened this one, exactly where it left off <<<",
+    linkedChatDeadEnd: "(No return is set - the story ends here in this chat)",
+    endOfLinkedChat: (name) => `--- End of chat "${name}" ---\n`,
+    missingChat: (name) => `  [!] Warning: a chat named "${name}" was supposed to open, but no such chat exists.`,
   },
 }
 
@@ -205,18 +199,18 @@ const renderMessageLines = (
 }
 
 /**
- * Recursively renders a thread (the main conversation, or any side-chat
- * opened from it) into `out`, following every branch a real playback could
- * take: linked clickable notifications, back-navigation to the home screen
- * and back into a contact's side-chat, and returnToParent jumps back to
- * whichever thread opened this one. Mirrors the branching logic in
- * useConversationPlayback.ts so the transcript matches what actually plays.
+ * Recursively renders a chat's messages into `out`, following every branch
+ * a real playback could take: linked clickable notifications, back-
+ * navigation to the home screen and back into another chat, and
+ * returnToParent jumps back to whichever chat opened this one. Mirrors the
+ * branching logic in useConversationPlayback.ts so the transcript matches
+ * what actually plays.
  */
 const renderThread = (
   messages: Message[],
   participants: Participant[],
   selfId: string,
-  subConversationsById: Map<string, Message[]>,
+  chatsById: Map<string, { title: string; messages: Message[] }>,
   L: Labels,
   out: string[],
   visiting: Set<string>,
@@ -225,39 +219,39 @@ const renderThread = (
     const message = messages[i]
     out.push(...renderMessageLines(message, i, participants, selfId, L))
 
-    // Clickable notification linked to a real side-chat.
-    if (message.type === "notification" && message.notificationClickable && message.linkedParticipantId) {
-      const name = participantName(participants, message.linkedParticipantId, selfId, L.you)
-      out.push(L.jumpToSubFromNotification(name))
-      const subMessages = subConversationsById.get(message.linkedParticipantId)
-      if (!subMessages) {
-        out.push(L.missingSubConversation(name))
-      } else if (!visiting.has(message.linkedParticipantId)) {
-        visiting.add(message.linkedParticipantId)
-        out.push(L.subThreadHeader(name))
-        const result = renderThread(subMessages, participants, selfId, subConversationsById, L, out, visiting)
-        if (!result.returnedToParent) out.push(`  ${L.subThreadDeadEnd}`)
-        out.push(L.endOfSubConversation(name))
-        visiting.delete(message.linkedParticipantId)
+    // Clickable notification linked to a real, separate chat.
+    if (message.type === "notification" && message.notificationClickable && message.linkedChatId) {
+      const target = chatsById.get(message.linkedChatId)
+      const name = target?.title ?? message.linkedChatId
+      out.push(L.jumpToChatFromNotification(name))
+      if (!target) {
+        out.push(L.missingChat(name))
+      } else if (!visiting.has(message.linkedChatId)) {
+        visiting.add(message.linkedChatId)
+        out.push(L.linkedChatHeader(name))
+        const result = renderThread(target.messages, participants, selfId, chatsById, L, out, visiting)
+        if (!result.returnedToParent) out.push(`  ${L.linkedChatDeadEnd}`)
+        out.push(L.endOfLinkedChat(name))
+        visiting.delete(message.linkedChatId)
       }
     }
 
-    // Back navigation to the home (chat-list) screen, possibly auto-opening a contact.
+    // Back navigation to the home (chat-list) screen, possibly auto-opening a chat.
     if (message.backNavigation?.enabled && message.backNavigation.autoOpen) {
       out.push(L.goesHome)
-      const targetId = message.backNavigation.autoSelectParticipantId
+      const targetId = message.backNavigation.autoSelectChatId
       if (targetId) {
-        const name = participantName(participants, targetId, selfId, L.you)
-        out.push(L.jumpToSubFromHomeAuto(name, message.backNavigation.autoSelectDelayMs ?? 900))
-        const subMessages = subConversationsById.get(targetId)
-        if (!subMessages) {
-          out.push(L.missingSubConversation(name))
+        const target = chatsById.get(targetId)
+        const name = target?.title ?? targetId
+        out.push(L.jumpToChatFromHomeAuto(name, message.backNavigation.autoSelectDelayMs ?? 900))
+        if (!target) {
+          out.push(L.missingChat(name))
         } else if (!visiting.has(targetId)) {
           visiting.add(targetId)
-          out.push(L.subThreadHeader(name))
-          const result = renderThread(subMessages, participants, selfId, subConversationsById, L, out, visiting)
-          if (!result.returnedToParent) out.push(`  ${L.subThreadDeadEnd}`)
-          out.push(L.endOfSubConversation(name))
+          out.push(L.linkedChatHeader(name))
+          const result = renderThread(target.messages, participants, selfId, chatsById, L, out, visiting)
+          if (!result.returnedToParent) out.push(`  ${L.linkedChatDeadEnd}`)
+          out.push(L.endOfLinkedChat(name))
           visiting.delete(targetId)
         }
       } else {
@@ -265,8 +259,8 @@ const renderThread = (
       }
     }
 
-    // returnToParent ends this thread and hands control back to the caller,
-    // exactly at the point right after wherever this thread was opened from.
+    // returnToParent ends this chat and hands control back to the caller,
+    // exactly at the point right after wherever this chat was opened from.
     if (message.returnToParent) {
       out.push(L.returnToParent)
       return { returnedToParent: true }
@@ -276,12 +270,10 @@ const renderThread = (
 }
 
 /**
- * Builds a single, fully linearized plain-text transcript of the whole
- * conversation: every message with all of its metadata (timestamp, sender,
- * status, delay, hidden flag), every notification banner and its settings,
- * every jump into a linked side-chat (from a clickable notification or from
- * back-navigation's simulated home screen), and every return back to the
- * main thread - in the order playback would actually show them.
+ * Builds a single, fully linearized plain-text transcript of every chat in
+ * the project: each chat gets its own section (with all of its message
+ * metadata, notification banners, linked-chat jumps, and returns) in the
+ * order playback would actually show them.
  */
 export const buildConversationTranscript = (
   conversation: Conversation,
@@ -289,29 +281,34 @@ export const buildConversationTranscript = (
   language: TranscriptLanguage = "fa",
 ): string => {
   const L = LABELS[language]
-  const members = getConversationMembers(conversation)
-  const title = getConversationTitle(conversation)
   const out: string[] = []
 
-  out.push(L.header(title))
+  const chatsById = new Map<string, { title: string; messages: Message[] }>(
+    conversation.chats.map((chat) => [
+      chat.id,
+      { title: getChatTitle(getChatMembers(conversation, chat), chat.name), messages: chat.messages },
+    ]),
+  )
+
+  out.push(L.header(conversation.chats.length === 1 ? chatsById.get(conversation.chats[0].id)!.title : "All chats"))
   out.push(`${L.generatedAt}: ${safeTimestamp(new Date().toISOString())}`)
-  out.push(
-    `${L.participants} (${isGroupConversation(conversation) ? L.group : L.direct}): ${members
-      .map((p) => (p.id === selfId ? `${p.name} (${L.you})` : p.name))
-      .join(", ")}`,
-  )
-  out.push("")
-  out.push(L.mainThreadStart)
   out.push("")
 
-  const subConversationsById = new Map<string, Message[]>(
-    (conversation.subConversations ?? []).map((sub) => [sub.participantId, sub.messages]),
-  )
-
-  renderThread(conversation.messages, conversation.participants, selfId, subConversationsById, L, out, new Set())
-
-  out.push("")
-  out.push(L.endOfMain)
+  conversation.chats.forEach((chat: Chat) => {
+    const members = getChatMembers(conversation, chat)
+    const title = chatsById.get(chat.id)!.title
+    out.push(L.chatStart(title))
+    out.push(
+      `${L.participants} (${isGroupChat(members) ? L.group : L.direct}): ${members
+        .map((p) => (p.id === selfId ? `${p.name} (${L.you})` : p.name))
+        .join(", ")}`,
+    )
+    out.push("")
+    renderThread(chat.messages, conversation.participants, selfId, chatsById, L, out, new Set([chat.id]))
+    out.push("")
+    out.push(L.chatEnd(title))
+    out.push("")
+  })
 
   return out.join("\n")
 }

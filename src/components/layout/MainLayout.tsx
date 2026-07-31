@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
+  ChevronsLeft,
+  ChevronsRight,
   Download,
   Eye,
   EyeOff,
@@ -53,7 +55,7 @@ import {
 } from "@/components/ui/dialog"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/utils/cn"
-import { clamp } from "@/utils/helpers"
+import { clamp, getChatMembers, getChatTitle } from "@/utils/helpers"
 import { exportNodeToImageSequence } from "@/utils/export"
 
 const buildDownloadName = (format: "png" | "jpeg", index?: number) => {
@@ -99,23 +101,20 @@ export const MainLayout = () => {
     hasOverflow: false,
   })
 
-  const visiblePlaybackMessages = useMemo(
-    () => conversation.messages.filter((message) => !message.isHidden),
-    [conversation.messages],
-  )
+  const activeChatId = useConversationStore((state) => state.activeChatId)
   const selfId = useMemo(
     () => getSelfParticipantId(conversation.participants, activeParticipantId),
     [conversation.participants, activeParticipantId],
   )
-  // Each linkable participant's own side-chat messages, visible-only - fed
-  // to the playback hook so it can play a linked notification's chat.
-  const subConversationsForPlayback = useMemo(() => {
+  // Every chat's own (visible) messages, keyed by chat id - fed to the
+  // playback hook so it can play any chat a linked notification opens.
+  const chatsForPlayback = useMemo(() => {
     const map: Record<string, Message[]> = {}
-    for (const thread of conversation.subConversations ?? []) {
-      map[thread.participantId] = thread.messages.filter((message) => !message.isHidden)
+    for (const chat of conversation.chats) {
+      map[chat.id] = chat.messages.filter((message) => !message.isHidden)
     }
     return map
-  }, [conversation.subConversations])
+  }, [conversation.chats])
   const {
     revealCount,
     typingSenderId,
@@ -128,16 +127,22 @@ export const MainLayout = () => {
     resume,
     stepForward,
     stepBack,
+    jumpToEnd,
+    jumpToStart,
     canStepBack,
     canStepForward,
     bannerMessage,
     bannerVisible,
     activeThread,
-    subRevealCount,
     openLinkedConversation,
     goHome,
     openFromHome,
-  } = useConversationPlayback(visiblePlaybackMessages, { selfId, subConversations: subConversationsForPlayback })
+  } = useConversationPlayback({
+    selfId,
+    chats: chatsForPlayback,
+    initialChatId: activeChatId,
+    typingSpeed: ui.typingSpeed,
+  })
   const bannerSender = bannerMessage
     ? conversation.participants.find((participant) => participant.id === bannerMessage.senderId)
     : undefined
@@ -158,7 +163,7 @@ export const MainLayout = () => {
   // land on the home screen - captured at the moment we decide to leave
   // for home, since by the time we're actually there `lastShownMessage`
   // no longer points at the message that configured this.
-  const pendingHomeAutoSelectRef = useRef<{ participantId: string; delayMs: number } | null>(null)
+  const pendingHomeAutoSelectRef = useRef<{ chatId: string; delayMs: number } | null>(null)
   // While playing, only reveal messages up to revealCount; otherwise show everything as usual.
   // While composing a new message, mirror it as a live bubble at the end of the preview.
   const draftPreviewMessage: Message | null = useMemo(() => {
@@ -176,66 +181,47 @@ export const MainLayout = () => {
       status: "sent",
     }
   }, [isPlaying, draftMessage])
-  // When a linked notification is open, the phone should show a real,
-  // separate chat containing only "you" and that participant - built from
-  // their side-chat - instead of the main conversation.
-  const activeThreadParticipant =
-    activeThread.kind === "sub"
-      ? conversation.participants.find((participant) => participant.id === activeThread.participantId)
-      : undefined
+  // When a chat other than the one currently being edited is open (via a
+  // linked notification or the home screen), the phone should show that
+  // chat's own participants and messages instead.
+  const activePlaybackMessageCount = chatsForPlayback[activeChatId]?.length ?? 0
+  const activeChat = useMemo(
+    () =>
+      activeThread.kind === "chat"
+        ? conversation.chats.find((chat) => chat.id === activeThread.chatId)
+        : undefined,
+    [conversation.chats, activeThread],
+  )
+  const activeChatMembers = useMemo(
+    () => (activeChat ? getChatMembers(conversation, activeChat) : []),
+    [conversation, activeChat],
+  )
   const playbackConversation = useMemo(() => {
-    if (activeThread.kind === "sub" && activeThreadParticipant) {
-      const selfParticipant = conversation.participants.find((participant) => participant.id === selfId)
-      const subMessages = subConversationsForPlayback[activeThread.participantId] ?? []
-      // Only attach the live draft bubble here if it actually belongs to
-      // this side-chat (i.e. it's being composed in this thread's own
-      // builder tab) - otherwise a draft left over from the main
-      // conversation's builder could leak into this screen.
-      const draftBelongsToThread =
-        draftPreviewMessage &&
-        (draftPreviewMessage.senderId === selfId ||
-          draftPreviewMessage.senderId === activeThreadParticipant.id)
-      return {
-        ...conversation,
-        groupName: undefined,
-        participants: selfParticipant
-          ? [selfParticipant, activeThreadParticipant]
-          : [activeThreadParticipant],
-        messages: [
-          ...subMessages.slice(0, subRevealCount),
-          ...(draftBelongsToThread ? [draftPreviewMessage as Message] : []),
-        ],
-      }
+    if (!activeChat) {
+      return { participants: [], messages: [] as Message[] }
     }
+    const chatMessages = chatsForPlayback[activeChat.id] ?? []
+    const draftBelongsToChat =
+      draftPreviewMessage && activeChatMembers.some((member) => member.id === draftPreviewMessage.senderId)
     return {
-      ...conversation,
+      participants: activeChatMembers,
+      chatName: activeChat.name,
       messages: [
-        ...(isPlaying ? visiblePlaybackMessages.slice(0, revealCount) : conversation.messages),
-        ...(draftPreviewMessage ? [draftPreviewMessage] : []),
+        ...(isPlaying ? chatMessages.slice(0, revealCount) : activeChat.messages.filter((m) => !m.isHidden)),
+        ...(draftBelongsToChat ? [draftPreviewMessage as Message] : []),
       ],
     }
-  }, [
-    conversation,
-    isPlaying,
-    visiblePlaybackMessages,
-    revealCount,
-    draftPreviewMessage,
-    activeThread,
-    activeThreadParticipant,
-    subConversationsForPlayback,
-    subRevealCount,
-    selfId,
-  ])
+  }, [activeChat, activeChatMembers, chatsForPlayback, isPlaying, revealCount, draftPreviewMessage])
 
   // Whichever message is currently the last one shown, in whichever chat
-  // (main or an open side-chat) is currently on screen - the one whose
-  // backNavigation decides what tapping the header's back button does.
+  // is currently on screen - the one whose backNavigation decides what
+  // tapping the header's back button does.
   const currentThreadMessages =
-    activeThread.kind === "sub"
-      ? (subConversationsForPlayback[activeThread.participantId] ?? []).slice(0, subRevealCount)
-      : isPlaying
-        ? visiblePlaybackMessages.slice(0, revealCount)
-        : conversation.messages.filter((message) => !message.isHidden)
+    activeThread.kind === "chat"
+      ? isPlaying
+        ? (chatsForPlayback[activeThread.chatId] ?? []).slice(0, revealCount)
+        : (activeChat?.messages.filter((message) => !message.isHidden) ?? [])
+      : []
   const lastShownMessage = currentThreadMessages[currentThreadMessages.length - 1]
   const canGoHome = activeThread.kind !== "home" && Boolean(lastShownMessage?.backNavigation?.enabled)
   const handleBack = () => {
@@ -246,7 +232,7 @@ export const MainLayout = () => {
   // the back button: once it's the last one shown (and playback isn't
   // paused/stopped), this schedules the same "leave for home" beat
   // handleBack would run for a real tap, after the configured delay. If
-  // that message also names an autoSelectParticipantId, remember it here
+  // that message also names an autoSelectChatId, remember it here
   // so the effect below can auto-tap that contact once we actually land
   // on the home screen.
   useEffect(() => {
@@ -257,12 +243,12 @@ export const MainLayout = () => {
     const backNav = lastShownMessage?.backNavigation
     if (!isPlaying || isPaused || !canGoHome || !backNav?.autoOpen) return
     const delay = backNav.autoOpenDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS
-    const autoSelectParticipantId = backNav.autoSelectParticipantId
+    const autoSelectChatId = backNav.autoSelectChatId
     const autoSelectDelayMs = backNav.autoSelectDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS
     backNavigationAutoOpenTimeoutRef.current = setTimeout(() => {
       backNavigationAutoOpenTimeoutRef.current = null
-      pendingHomeAutoSelectRef.current = autoSelectParticipantId
-        ? { participantId: autoSelectParticipantId, delayMs: autoSelectDelayMs }
+      pendingHomeAutoSelectRef.current = autoSelectChatId
+        ? { chatId: autoSelectChatId, delayMs: autoSelectDelayMs }
         : null
       goHome()
     }, delay)
@@ -293,7 +279,7 @@ export const MainLayout = () => {
     pendingHomeAutoSelectRef.current = null
     backNavigationAutoSelectTimeoutRef.current = setTimeout(() => {
       backNavigationAutoSelectTimeoutRef.current = null
-      openFromHome(pending.participantId)
+      openFromHome(pending.chatId)
     }, pending.delayMs)
     return () => {
       if (backNavigationAutoSelectTimeoutRef.current) {
@@ -333,22 +319,38 @@ export const MainLayout = () => {
     }
   }, [])
 
-  // Everyone in the roster except "you" - the contacts listed on the
-  // simulated home screen.
-  const homeParticipants = conversation.participants.filter((participant) => participant.id !== selfId)
+  // Every other chat in the project - the contacts listed on the simulated
+  // home screen. Excludes whichever chat is currently open.
+  const homeChats = useMemo(
+    () =>
+      conversation.chats
+        .filter((chat) => !(activeThread.kind === "chat" && chat.id === activeThread.chatId))
+        .map((chat) => {
+          const members = getChatMembers(conversation, chat)
+          const isDirect = members.length === 2
+          const otherMember = members.find((member) => member.id !== selfId)
+          return {
+            id: chat.id,
+            title: getChatTitle(members, chat.name),
+            avatarUrl: isDirect ? otherMember?.avatarUrl : undefined,
+            isVerified: isDirect ? otherMember?.isVerified : undefined,
+          }
+        }),
+    [conversation, activeThread, selfId],
+  )
   const homePreviews = useMemo(() => {
     const map: Record<string, { text: string; timestamp?: string }> = {}
-    for (const thread of conversation.subConversations ?? []) {
-      const visible = thread.messages.filter((message) => !message.isHidden)
+    for (const chat of conversation.chats) {
+      const visible = chat.messages.filter((message) => !message.isHidden)
       const last = visible[visible.length - 1]
       if (!last) continue
-      map[thread.participantId] = {
+      map[chat.id] = {
         text: last.type === "image" ? "Sent a photo" : last.content,
         timestamp: last.timestamp,
       }
     }
     return map
-  }, [conversation.subConversations])
+  }, [conversation.chats])
 
   const handleQuickExport = async (mode: "download" | "preview") => {
     const target = exportSettings.captureMode === "full" ? fullExportRef.current : exportRef.current
@@ -524,7 +526,7 @@ export const MainLayout = () => {
   const appliedScale = clamp((ui.autoFit ? fitScale : 1) * ui.zoom, 0.1, 2)
   const scaledWidth = exportSettings.width * appliedScale
   const scaledHeight = exportSettings.height * appliedScale
-  const visibleMessageCount = conversation.messages.filter((message) => !message.isHidden).length
+  const visibleMessageCount = activeChat?.messages.filter((message) => !message.isHidden).length ?? 0
   const resolvedExportHeight =
     exportSettings.captureMode === "full"
       ? Math.max(conversationMetrics.fullExportHeight, exportSettings.height)
@@ -600,7 +602,7 @@ export const MainLayout = () => {
   useEffect(() => {
     if (!isPlaying) return
     requestAnimationFrame(() => scrollPreviewConversation("bottom"))
-  }, [isPlaying, revealCount, subRevealCount, activeThread, typingSenderId])
+  }, [isPlaying, revealCount, activeThread, typingSenderId])
 
   // Tapping a clickable notification banner mimics opening a real OS
   // notification: after a short configurable delay, it reveals the full
@@ -609,13 +611,13 @@ export const MainLayout = () => {
   const handleBannerClick = () => {
     if (!bannerMessage?.notificationClickable || isOpeningChatFromBanner) return
     setIsOpeningChatFromBanner(true)
-    const linkedParticipantId = bannerMessage.linkedParticipantId
+    const linkedChatId = bannerMessage.linkedChatId
     const delay = bannerMessage.notificationOpenDelayMs ?? DEFAULT_NOTIFICATION_OPEN_DELAY_MS
     bannerOpenTimeoutRef.current = setTimeout(() => {
       setIsOpeningChatFromBanner(false)
-      if (linkedParticipantId) {
+      if (linkedChatId) {
         // Real, separate chat: swap the phone screen over to it.
-        openLinkedConversation(linkedParticipantId)
+        openLinkedConversation(linkedChatId)
       } else {
         // No side-chat configured - fall back to the old behavior of just
         // revealing the rest of the current conversation.
@@ -700,7 +702,7 @@ export const MainLayout = () => {
       label: "Messages",
       icon: MessagesSquare,
       description: "Write, reorder, and time the chat flow.",
-      meta: `${conversation.messages.length} messages`,
+      meta: `${conversation.chats.reduce((sum, chat) => sum + chat.messages.length, 0)} messages`,
     },
     {
       id: "settings",
@@ -815,7 +817,16 @@ export const MainLayout = () => {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={visiblePlaybackMessages.length === 0 || !canStepBack}
+                      disabled={activePlaybackMessageCount === 0 || !canStepBack}
+                      onClick={jumpToStart}
+                      title="Jump to start"
+                    >
+                      <ChevronsLeft className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={activePlaybackMessageCount === 0 || !canStepBack}
                       onClick={stepBack}
                       title="Step back"
                     >
@@ -824,7 +835,7 @@ export const MainLayout = () => {
                     <Button
                       variant={isPlaying && !isPaused ? "outline" : "default"}
                       size="sm"
-                      disabled={visiblePlaybackMessages.length === 0}
+                      disabled={activePlaybackMessageCount === 0}
                       onClick={() => {
                         if (isPlaying && !isPaused) {
                           pause()
@@ -847,11 +858,20 @@ export const MainLayout = () => {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={visiblePlaybackMessages.length === 0 || (isPlaying && !canStepForward)}
+                      disabled={activePlaybackMessageCount === 0 || !canStepForward}
                       onClick={stepForward}
                       title="Step forward"
                     >
                       <SkipForward className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={activePlaybackMessageCount === 0 || !canStepForward}
+                      onClick={jumpToEnd}
+                      title="Jump to end"
+                    >
+                      <ChevronsRight className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="outline"
@@ -976,9 +996,9 @@ export const MainLayout = () => {
                             typingSenderId={typingSenderId}
                             typingDraftText={typingDraftText}
                             screen={activeThread.kind === "home" ? "home" : "chat"}
-                            homeParticipants={homeParticipants}
+                            homeChats={homeChats}
                             homePreviews={homePreviews}
-                            onSelectHomeParticipant={openFromHome}
+                            onSelectHomeChat={openFromHome}
                             onBack={canGoHome ? handleBack : undefined}
                           />
                           {ui.showNotificationBanner && bannerMessage ? (
@@ -1193,7 +1213,11 @@ export const MainLayout = () => {
                       style={{ width: exportSettings.width, height: resolvedExportHeight }}
                     >
                       <ChatLayout
-                        conversation={conversation}
+                        conversation={{
+                          participants: activeChatMembers,
+                          chatName: activeChat?.name,
+                          messages: activeChat?.messages.filter((message) => !message.isHidden) ?? [],
+                        }}
                         layout={layout}
                         theme={theme}
                         showChrome={ui.showChrome}

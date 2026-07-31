@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
-import { clamp, getConversationTitle, isGroupConversation, readImageAsCompressedDataUrl } from "@/utils/helpers"
+import { clamp, getChatMembers, getChatTitle, readImageAsCompressedDataUrl } from "@/utils/helpers"
 import { useTranslation } from "@/i18n/useTranslation"
 
 export const SettingsPanel = () => {
@@ -18,7 +18,8 @@ export const SettingsPanel = () => {
   const ui = useConversationStore((state) => state.ui)
   const setUi = useConversationStore((state) => state.setUi)
   const conversation = useConversationStore((state) => state.conversation)
-  const setGroupName = useConversationStore((state) => state.setGroupName)
+  const activeChatId = useConversationStore((state) => state.activeChatId)
+  const renameChat = useConversationStore((state) => state.renameChat)
   const backgroundImageUrl = useConversationStore((state) => state.backgroundImageUrl)
   const backgroundImageOpacity = useConversationStore((state) => state.backgroundImageOpacity)
   const setBackgroundImageUrl = useConversationStore((state) => state.setBackgroundImageUrl)
@@ -27,8 +28,10 @@ export const SettingsPanel = () => {
   const backgroundColor = useConversationStore((state) => state.backgroundColor)
   const setBackgroundColor = useConversationStore((state) => state.setBackgroundColor)
 
-  const isGroup = isGroupConversation(conversation)
-  const title = getConversationTitle(conversation)
+  const activeChat = conversation.chats.find((chat) => chat.id === activeChatId) ?? conversation.chats[0]
+  const chatMembers = activeChat ? getChatMembers(conversation, activeChat) : []
+  const isGroup = chatMembers.length > 2
+  const title = getChatTitle(chatMembers, activeChat?.name)
 
   const layout = layoutConfigs.find((item) => item.id === layoutId) ?? layoutConfigs[0]
   const hasDark = layout.themes.some((theme) => theme.id === "dark")
@@ -48,10 +51,10 @@ export const SettingsPanel = () => {
 
       <div className="space-y-2">
         <Label>{isGroup ? t.settings.groupName : t.settings.conversation}</Label>
-        {isGroup ? (
+        {isGroup && activeChat ? (
           <Input
-            value={conversation.groupName ?? ""}
-            onChange={(event) => setGroupName(event.target.value)}
+            value={activeChat.name ?? ""}
+            onChange={(event) => renameChat(activeChat.id, event.target.value)}
             placeholder={t.settings.groupNamePlaceholder}
           />
         ) : (
@@ -126,6 +129,31 @@ export const SettingsPanel = () => {
           <div className="text-xs text-slate-500">{t.settings.autoFitDescription}</div>
         </div>
         <Switch checked={ui.autoFit} onCheckedChange={(value) => setUi({ autoFit: value })} />
+      </div>
+
+      <div className="space-y-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium text-slate-900">{t.settings.typingSpeed}</div>
+            <div className="text-xs text-slate-500">{t.settings.typingSpeedDescription}</div>
+          </div>
+          <Button variant="ghost" size="sm" onClick={() => setUi({ typingSpeed: 1 })}>
+            {t.settings.typingSpeedReset}
+          </Button>
+        </div>
+        <div className="flex items-center gap-3">
+          <Slider
+            min={25}
+            max={300}
+            step={5}
+            value={[Math.round(ui.typingSpeed * 100)]}
+            onValueChange={(value) => setUi({ typingSpeed: clamp(Number(value[0]) / 100, 0.25, 3) })}
+            className="flex-1"
+          />
+          <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">
+            {ui.typingSpeed.toFixed(2)}x
+          </span>
+        </div>
       </div>
 
       <div className="space-y-2">

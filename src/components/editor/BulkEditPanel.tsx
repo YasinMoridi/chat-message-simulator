@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { CalendarClock } from "lucide-react"
 import { useConversationStore } from "@/store/conversationStore"
 import type { MessageStatus } from "@/types/message"
-import { getConversationMembers } from "@/utils/helpers"
+
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -25,8 +25,11 @@ export const BulkEditPanel = () => {
   const [open, setOpen] = useState(false)
 
   const conversation = useConversationStore((state) => state.conversation)
+  const activeChatId = useConversationStore((state) => state.activeChatId)
   const bulkUpdateMessages = useConversationStore((state) => state.bulkUpdateMessages)
-  const members = useMemo(() => getConversationMembers(conversation), [conversation])
+  // Sender re-assignment offers the whole roster - a bulk pass can span
+  // every chat at once, each with its own members.
+  const members = conversation.participants
 
   const [dateEnabled, setDateEnabled] = useState(false)
   const [date, setDate] = useState(todayInputValue())
@@ -41,23 +44,24 @@ export const BulkEditPanel = () => {
   const [delayEnabled, setDelayEnabled] = useState(false)
   const [delaySeconds, setDelaySeconds] = useState(1.2)
 
-  const [includeSubConversations, setIncludeSubConversations] = useState(false)
+  const [applyToAllChats, setApplyToAllChats] = useState(false)
 
-  const subMessageCount = (conversation.subConversations ?? []).reduce(
-    (sum, entry) => sum + entry.messages.length,
-    0,
+  const activeChat = conversation.chats.find((chat) => chat.id === activeChatId) ?? conversation.chats[0]
+  const totalMessageCount = useMemo(
+    () => conversation.chats.reduce((sum, chat) => sum + chat.messages.length, 0),
+    [conversation.chats],
   )
-  const affectedCount = conversation.messages.length + (includeSubConversations ? subMessageCount : 0)
+  const affectedCount = applyToAllChats ? totalMessageCount : activeChat?.messages.length ?? 0
   const nothingSelected = !dateEnabled && !senderEnabled && !statusEnabled && !delayEnabled
 
   const handleApply = () => {
-    bulkUpdateMessages({
+    if (!activeChat) return
+    bulkUpdateMessages(applyToAllChats ? "all" : activeChat.id, {
       date: dateEnabled ? date : undefined,
       keepTimeOfDay: dateEnabled ? keepTimeOfDay : undefined,
       senderId: senderEnabled ? senderId : undefined,
       status: statusEnabled ? status : undefined,
       delayMs: delayEnabled ? Math.round(delaySeconds * 1000) : undefined,
-      includeSubConversations,
     })
     setOpen(false)
   }
@@ -166,13 +170,13 @@ export const BulkEditPanel = () => {
           </div>
 
           {/* Scope */}
-          {subMessageCount > 0 ? (
+          {conversation.chats.length > 1 ? (
             <div className="flex items-center justify-between gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-3 py-3">
               <div className="space-y-0.5">
                 <Label>{t.bulkEdit.includeSubConversations}</Label>
                 <p className="text-[11px] text-slate-500">{t.bulkEdit.includeSubConversationsHint}</p>
               </div>
-              <Switch checked={includeSubConversations} onCheckedChange={setIncludeSubConversations} />
+              <Switch checked={applyToAllChats} onCheckedChange={setApplyToAllChats} />
             </div>
           ) : null}
 

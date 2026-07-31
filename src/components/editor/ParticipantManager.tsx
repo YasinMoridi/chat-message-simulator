@@ -23,8 +23,6 @@ const emptyParticipant = {
 export const ParticipantManager = () => {
   const { t } = useTranslation()
   const participants = useConversationStore((state) => state.conversation.participants)
-  const memberIds = useConversationStore((state) => state.conversation.memberIds)
-  const toggleConversationMember = useConversationStore((state) => state.toggleConversationMember)
   const activeParticipantId = useConversationStore((state) => state.activeParticipantId)
   const addParticipant = useConversationStore((state) => state.addParticipant)
   const updateParticipant = useConversationStore((state) => state.updateParticipant)
@@ -33,8 +31,6 @@ export const ParticipantManager = () => {
 
   const [draft, setDraft] = useState(emptyParticipant)
   const [error, setError] = useState<string | null>(null)
-  const effectiveMemberIds = memberIds && memberIds.length ? memberIds : participants.map((participant) => participant.id)
-  const memberCount = effectiveMemberIds.length
 
   const validateFile = (file: File) => {
     if (!file.type.startsWith("image/")) {
@@ -88,15 +84,6 @@ export const ParticipantManager = () => {
       </div>
 
       {error ? <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div> : null}
-
-      <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-        <p className="text-xs text-slate-600">{t.participants.chatMembershipHint}</p>
-        <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 shadow-sm">
-          {memberCount > 2
-            ? t.participants.groupOfCount.replace("{count}", String(memberCount))
-            : t.participants.directChat}
-        </span>
-      </div>
 
       <div className="space-y-3">
         {participants.map((participant) => (
@@ -194,13 +181,6 @@ export const ParticipantManager = () => {
                   <Switch
                     checked={Boolean(participant.isVerified)}
                     onCheckedChange={(value) => updateParticipant(participant.id, { isVerified: value })}
-                  />
-                </div>
-                <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                  <span className="text-xs font-medium text-slate-500">{t.participants.inThisChat}</span>
-                  <Switch
-                    checked={effectiveMemberIds.includes(participant.id)}
-                    onCheckedChange={() => toggleConversationMember(participant.id)}
                   />
                 </div>
               </div>

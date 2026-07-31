@@ -20,16 +20,21 @@ import { readImageAsCompressedDataUrl } from "@/utils/helpers"
 import { useTranslation } from "@/i18n/useTranslation"
 import { Clipboard, ImagePlus, X } from "lucide-react"
 
+/** One chat this form can offer as a notification's or back-navigation's link target. */
+export interface AvailableChatOption {
+  id: string
+  label: string
+}
+
 interface MessageFormProps {
+  /** Who can be picked as this message's SENDER - this chat's actual members. */
   participants: Participant[]
   /**
-   * Full character roster to offer as a notification's linked-chat target -
-   * falls back to `participants` when omitted. Kept separate from
-   * `participants` because the sender list for THIS conversation may be
-   * narrower (only its actual members) than the whole roster you can still
-   * link a notification to.
+   * Every chat in the project, offered as a notification's or
+   * back-navigation's link target - lets a message here open any other
+   * chat, regardless of who's actually a member of this one.
    */
-  rosterParticipants?: Participant[]
+  availableChats?: AvailableChatOption[]
   initial?: Message | null
   defaultSenderId?: string
   compact?: boolean
@@ -38,19 +43,12 @@ interface MessageFormProps {
   advancedOpen?: boolean
   onToggleAdvanced?: () => void
   /**
-   * True when this form is editing a message that lives inside a
-   * notification's linked side-chat (not the main conversation). Swaps the
-   * notification-authoring block for a single "return to main chat" toggle.
+   * Called with a chat id when the person clicks "edit messages in that
+   * chat" next to the linked-chat picker. The parent (which owns the tab
+   * switcher) is expected to switch the builder over to that chat's own
+   * tab - this form has no way to show that editor itself.
    */
-  isSubMessage?: boolean
-  /**
-   * Called with a participant id when the person clicks "edit messages in
-   * that chat" next to the linked-conversation picker. The parent (which
-   * owns the main/thread tab switcher) is expected to switch views to that
-   * participant's own thread - this form has no way to show that editor
-   * itself anymore.
-   */
-  onJumpToLinkedThread?: (participantId: string) => void
+  onJumpToLinkedChat?: (chatId: string) => void
   onSubmit: (payload: {
     senderId: string
     content: string
@@ -64,7 +62,7 @@ interface MessageFormProps {
     notificationOpenDelayMs?: number
     notificationAutoOpen?: boolean
     notificationAutoOpenDelayMs?: number
-    linkedParticipantId?: string
+    linkedChatId?: string
     returnToParent?: boolean
     backNavigation?: Message["backNavigation"]
   }) => void
@@ -88,7 +86,7 @@ const fromInputValue = (value: string) => new Date(value).toISOString()
 
 export const MessageForm = ({
   participants,
-  rosterParticipants,
+  availableChats,
   initial,
   defaultSenderId,
   compact,
@@ -96,20 +94,21 @@ export const MessageForm = ({
   submitLabel,
   advancedOpen,
   onToggleAdvanced,
-  isSubMessage = false,
-  onJumpToLinkedThread,
+  onJumpToLinkedChat,
   onSubmit,
   onCancel,
 }: MessageFormProps) => {
   const { t } = useTranslation()
-  // The full set of participants this form is allowed to pick a sender
-  // from. Falls back to `participants` (this conversation/thread's actual
-  // members) when no wider roster was given - e.g. inside a linked
-  // side-chat, where only its two members should ever be selectable.
-  const roster = rosterParticipants ?? participants
+  // Who can be picked as this message's SENDER - always just this chat's
+  // actual members.
+  const senderRoster = participants
+  // Which chats can be picked as a notification's or back-navigation's
+  // link target - every chat in the project, since you can open any of
+  // them regardless of which one you're currently editing.
+  const chatOptions = availableChats ?? []
   const [content, setContent] = useState(initial?.content ?? "")
   const [senderId, setSenderId] = useState(
-    initial?.senderId ?? resolveSenderId(defaultSenderId, roster),
+    initial?.senderId ?? resolveSenderId(defaultSenderId, senderRoster),
   )
   const [timestamp, setTimestamp] = useState(
     initial?.timestamp ? toInputValue(initial.timestamp) : toInputValue(new Date().toISOString()),
@@ -144,19 +143,22 @@ export const MessageForm = ({
   const [notificationAutoOpenDelaySeconds, setNotificationAutoOpenDelaySeconds] = useState(
     (initial?.notificationAutoOpenDelayMs ?? DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS) / 1000,
   )
-  const [linkedParticipantId, setLinkedParticipantId] = useState(initial?.linkedParticipantId ?? "")
+  const [linkedChatId, setLinkedChatId] = useState(initial?.linkedChatId ?? "")
   const [returnToParent, setReturnToParent] = useState(initial?.returnToParent ?? false)
+  // Single switch: when on, this chat leaves for the home screen by itself
+  // after backNavigationAutoOpenDelaySeconds - nobody ever has to tap the
+  // back button, live or recorded (though it still works as a manual
+  // shortcut too). Internally this still drives both the underlying
+  // backNavigation.enabled + backNavigation.autoOpen fields (the playback
+  // engine needs both), but the form only exposes one control.
   const [backNavigationEnabled, setBackNavigationEnabled] = useState(
     initial?.backNavigation?.enabled ?? false,
-  )
-  const [backNavigationAutoOpenEnabled, setBackNavigationAutoOpenEnabled] = useState(
-    initial?.backNavigation?.autoOpen ?? false,
   )
   const [backNavigationAutoOpenDelaySeconds, setBackNavigationAutoOpenDelaySeconds] = useState(
     (initial?.backNavigation?.autoOpenDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS) / 1000,
   )
-  const [backNavigationAutoSelectParticipantId, setBackNavigationAutoSelectParticipantId] = useState(
-    initial?.backNavigation?.autoSelectParticipantId ?? "",
+  const [backNavigationAutoSelectChatId, setBackNavigationAutoSelectChatId] = useState(
+    initial?.backNavigation?.autoSelectChatId ?? "",
   )
   const [backNavigationAutoSelectDelaySeconds, setBackNavigationAutoSelectDelaySeconds] = useState(
     (initial?.backNavigation?.autoSelectDelayMs ?? DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS) / 1000,
@@ -167,7 +169,6 @@ export const MessageForm = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const setDraftMessage = useConversationStore((state) => state.setDraftMessage)
-  const ensureConversationMember = useConversationStore((state) => state.ensureConversationMember)
   const notificationSenderNames = useConversationStore((state) => state.notificationSenderNames)
   const addNotificationSenderName = useConversationStore((state) => state.addNotificationSenderName)
 
@@ -200,15 +201,15 @@ export const MessageForm = ({
     if (initial) return
     const previousDefault = previousDefaultRef.current
     previousDefaultRef.current = defaultSenderId
-    const nextDefault = resolveSenderId(defaultSenderId, roster)
+    const nextDefault = resolveSenderId(defaultSenderId, senderRoster)
     setSenderId((current) => {
-      const isValid = roster.some((participant) => participant.id === current)
+      const isValid = senderRoster.some((participant) => participant.id === current)
       if (!current || !isValid || current === previousDefault) {
         return nextDefault
       }
       return current
     })
-  }, [defaultSenderId, initial, roster])
+  }, [defaultSenderId, initial, senderRoster])
 
   const insertAtCursor = (text: string) => {
     const element = textareaRef.current
@@ -275,17 +276,10 @@ export const MessageForm = ({
     if (type === "notification" && notificationOverrideEnabled && notificationSenderName.trim()) {
       addNotificationSenderName(notificationSenderName)
     }
-    // The sender is now always picked from `roster` via the Select
+    // The sender is always picked from `senderRoster` via the Select
     // below - never free-typed - so `senderId` is already a real,
-    // existing participant id. No name-matching or implicit
-    // participant creation happens here anymore.
+    // existing participant id.
     const finalSenderId = senderId
-    // rosterParticipants is only passed for the main conversation's
-    // forms - a roster character who's about to speak here should
-    // count as a member, even if they were previously benched.
-    if (rosterParticipants && finalSenderId) {
-      ensureConversationMember(finalSenderId)
-    }
     onSubmit({
       senderId: finalSenderId,
       content,
@@ -313,25 +307,20 @@ export const MessageForm = ({
         type === "notification" && notificationAutoOpenEnabled
           ? Math.round(Math.max(0, notificationAutoOpenDelaySeconds) * 1000)
           : undefined,
-      linkedParticipantId:
+      linkedChatId:
         type === "notification" && notificationAutoOpenEnabled
-          ? linkedParticipantId || undefined
+          ? linkedChatId || undefined
           : undefined,
-      returnToParent: isSubMessage ? returnToParent : undefined,
+      returnToParent,
       backNavigation: backNavigationEnabled
         ? {
             enabled: true,
-            autoOpen: backNavigationAutoOpenEnabled,
-            autoOpenDelayMs: backNavigationAutoOpenEnabled
-              ? Math.round(Math.max(0, backNavigationAutoOpenDelaySeconds) * 1000)
+            autoOpen: true,
+            autoOpenDelayMs: Math.round(Math.max(0, backNavigationAutoOpenDelaySeconds) * 1000),
+            autoSelectChatId: backNavigationAutoSelectChatId || undefined,
+            autoSelectDelayMs: backNavigationAutoSelectChatId
+              ? Math.round(Math.max(0, backNavigationAutoSelectDelaySeconds) * 1000)
               : undefined,
-            autoSelectParticipantId: backNavigationAutoOpenEnabled
-              ? backNavigationAutoSelectParticipantId || undefined
-              : undefined,
-            autoSelectDelayMs:
-              backNavigationAutoOpenEnabled && backNavigationAutoSelectParticipantId
-                ? Math.round(Math.max(0, backNavigationAutoSelectDelaySeconds) * 1000)
-                : undefined,
           }
         : { enabled: false },
     })
@@ -340,7 +329,7 @@ export const MessageForm = ({
       setTimestamp(toInputValue(new Date().toISOString()))
       setType("text")
       setStatus("sent")
-      setSenderId(resolveSenderId(defaultSenderId, roster))
+      setSenderId(resolveSenderId(defaultSenderId, senderRoster))
       setImageUrl("")
       setImageError(null)
       setDelaySeconds(DEFAULT_MESSAGE_DELAY_MS / 1000)
@@ -350,12 +339,11 @@ export const MessageForm = ({
       setNotificationAvatarUrl("")
       setNotificationAutoOpenEnabled(false)
       setNotificationAutoOpenDelaySeconds(DEFAULT_NOTIFICATION_AUTO_OPEN_DELAY_MS / 1000)
-      setLinkedParticipantId("")
+      setLinkedChatId("")
       setReturnToParent(false)
       setBackNavigationEnabled(false)
-      setBackNavigationAutoOpenEnabled(false)
       setBackNavigationAutoOpenDelaySeconds(DEFAULT_BACK_NAVIGATION_AUTO_OPEN_DELAY_MS / 1000)
-      setBackNavigationAutoSelectParticipantId("")
+      setBackNavigationAutoSelectChatId("")
       setBackNavigationAutoSelectDelaySeconds(DEFAULT_BACK_NAVIGATION_AUTO_SELECT_DELAY_MS / 1000)
     }
   }
@@ -449,7 +437,7 @@ export const MessageForm = ({
                   <SelectValue placeholder={t.messageForm.senderPlaceholder} />
                 </SelectTrigger>
                 <SelectContent>
-                  {roster.map((participant) => (
+                  {senderRoster.map((participant) => (
                     <SelectItem key={participant.id} value={participant.id}>
                       {participant.name}
                     </SelectItem>
@@ -530,15 +518,13 @@ export const MessageForm = ({
             </div>
           </div>
 
-          {isSubMessage ? (
-            <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
-              <div className="space-y-0.5">
-                <Label>{t.messageForm.returnToParent}</Label>
-                <p className="text-[11px] text-slate-500">{t.messageForm.returnToParentHint}</p>
-              </div>
-              <Switch checked={returnToParent} onCheckedChange={setReturnToParent} />
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3">
+            <div className="space-y-0.5">
+              <Label>{t.messageForm.returnToParent}</Label>
+              <p className="text-[11px] text-slate-500">{t.messageForm.returnToParentHint}</p>
             </div>
-          ) : null}
+            <Switch checked={returnToParent} onCheckedChange={setReturnToParent} />
+          </div>
 
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white px-3 py-3">
             <div className="flex items-center justify-between gap-2">
@@ -550,77 +536,63 @@ export const MessageForm = ({
             </div>
             {backNavigationEnabled ? (
               <>
-                <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
-                  <div className="space-y-0.5">
-                    <Label>{t.messageForm.backNavigationAutoOpen}</Label>
-                    <p className="text-[11px] text-slate-500">{t.messageForm.backNavigationAutoOpenHint}</p>
-                  </div>
-                  <Switch
-                    checked={backNavigationAutoOpenEnabled}
-                    onCheckedChange={setBackNavigationAutoOpenEnabled}
+                <div className="space-y-2 border-t border-slate-100 pt-3">
+                  <Label>{t.messageForm.backNavigationAutoOpenAfter}</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={backNavigationAutoOpenDelaySeconds}
+                    onChange={(event) =>
+                      setBackNavigationAutoOpenDelaySeconds(Number(event.target.value))
+                    }
                   />
+                  <p className="text-[11px] text-slate-500">
+                    {t.messageForm.backNavigationAutoOpenAfterHint}
+                  </p>
                 </div>
-                {backNavigationAutoOpenEnabled ? (
-                  <>
-                    <div className="space-y-2">
-                      <Label>{t.messageForm.backNavigationAutoOpenAfter}</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        step={0.1}
-                        value={backNavigationAutoOpenDelaySeconds}
-                        onChange={(event) =>
-                          setBackNavigationAutoOpenDelaySeconds(Number(event.target.value))
-                        }
-                      />
-                      <p className="text-[11px] text-slate-500">
-                        {t.messageForm.backNavigationAutoOpenAfterHint}
-                      </p>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>{t.messageForm.backNavigationAutoSelect}</Label>
-                      <Select
-                        value={backNavigationAutoSelectParticipantId || "__none__"}
-                        onValueChange={(value) =>
-                          setBackNavigationAutoSelectParticipantId(value === "__none__" ? "" : value)
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder={t.messageForm.backNavigationAutoSelectNone} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__none__">
-                            {t.messageForm.backNavigationAutoSelectNone}
-                          </SelectItem>
-                          {roster.map((participant) => (
-                            <SelectItem key={participant.id} value={participant.id}>
-                              {participant.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-[11px] text-slate-500">
-                        {t.messageForm.backNavigationAutoSelectHint}
-                      </p>
-                    </div>
-                    {backNavigationAutoSelectParticipantId ? (
-                      <div className="space-y-2">
-                        <Label>{t.messageForm.backNavigationAutoSelectAfter}</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={0.1}
-                          value={backNavigationAutoSelectDelaySeconds}
-                          onChange={(event) =>
-                            setBackNavigationAutoSelectDelaySeconds(Number(event.target.value))
-                          }
-                        />
-                        <p className="text-[11px] text-slate-500">
-                          {t.messageForm.backNavigationAutoSelectAfterHint}
-                        </p>
-                      </div>
-                    ) : null}
-                  </>
+                <div className="space-y-2">
+                  <Label>{t.messageForm.backNavigationAutoSelect}</Label>
+                  <Select
+                    value={backNavigationAutoSelectChatId || "__none__"}
+                    onValueChange={(value) =>
+                      setBackNavigationAutoSelectChatId(value === "__none__" ? "" : value)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={t.messageForm.backNavigationAutoSelectNone} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">
+                        {t.messageForm.backNavigationAutoSelectNone}
+                      </SelectItem>
+                      {chatOptions.map((chat) => (
+                        <SelectItem key={chat.id} value={chat.id}>
+                          {chat.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-slate-500">
+                    {t.messageForm.backNavigationAutoSelectHint}
+                  </p>
+                </div>
+                {backNavigationAutoSelectChatId ? (
+                  <div className="space-y-2">
+                    <Label>{t.messageForm.backNavigationAutoSelectAfter}</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      value={backNavigationAutoSelectDelaySeconds}
+                      onChange={(event) =>
+                        setBackNavigationAutoSelectDelaySeconds(Number(event.target.value))
+                      }
+                    />
+                    <p className="text-[11px] text-slate-500">
+                      {t.messageForm.backNavigationAutoSelectAfterHint}
+                    </p>
+                  </div>
                 ) : null}
               </>
             ) : null}
@@ -706,22 +678,22 @@ export const MessageForm = ({
                   </p>
                 </div>
               ) : null}
-              {notificationAutoOpenEnabled && !isSubMessage ? (
+              {notificationAutoOpenEnabled ? (
                 <div className="space-y-3 border-t border-slate-100 pt-3">
                   <div className="space-y-2">
                     <Label>{t.messageForm.linkedConversation}</Label>
                     <Select
-                      value={linkedParticipantId || "__none__"}
-                      onValueChange={(value) => setLinkedParticipantId(value === "__none__" ? "" : value)}
+                      value={linkedChatId || "__none__"}
+                      onValueChange={(value) => setLinkedChatId(value === "__none__" ? "" : value)}
                     >
                       <SelectTrigger>
                         <SelectValue placeholder={t.messageForm.linkedConversationNone} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="__none__">{t.messageForm.linkedConversationNone}</SelectItem>
-                        {roster.map((participant) => (
-                          <SelectItem key={participant.id} value={participant.id}>
-                            {participant.name}
+                        {chatOptions.map((chat) => (
+                          <SelectItem key={chat.id} value={chat.id}>
+                            {chat.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -730,16 +702,16 @@ export const MessageForm = ({
                       {t.messageForm.linkedConversationHint}
                     </p>
                   </div>
-                  {linkedParticipantId ? (
+                  {linkedChatId ? (
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2">
                       <p className="text-[11px] text-slate-500">{t.messageForm.linkedThreadJumpHint}</p>
-                      {onJumpToLinkedThread ? (
+                      {onJumpToLinkedChat ? (
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
                           className="shrink-0"
-                          onClick={() => onJumpToLinkedThread(linkedParticipantId)}
+                          onClick={() => onJumpToLinkedChat(linkedChatId)}
                         >
                           {t.messageForm.linkedThreadJumpButton}
                         </Button>

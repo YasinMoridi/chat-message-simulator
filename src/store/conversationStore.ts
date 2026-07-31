@@ -1,11 +1,11 @@
 import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { defaultLayoutId } from "../constants/layouts"
-import type { Conversation, Participant, SubConversation } from "../types/conversation"
+import type { Chat, Conversation, Participant } from "../types/conversation"
 import type { Message, MessageStatus, MessageType, DraftMessage } from "../types/message"
 import { DEFAULT_MESSAGE_DELAY_MS } from "../types/message"
 import type { LayoutId, ThemeId } from "../types/layout"
-import { generateId, isGroupConversation } from "../utils/helpers"
+import { generateId, sameMemberSet } from "../utils/helpers"
 
 export type ExportFormat = "png" | "jpeg"
 export type ExportCaptureMode = "viewport" | "full" | "screens"
@@ -35,8 +35,6 @@ export interface BulkMessageUpdate {
   senderId?: string
   status?: MessageStatus
   delayMs?: number
-  /** Also apply the same changes to every side-conversation's messages. */
-  includeSubConversations?: boolean
 }
 
 export interface UiState {
@@ -48,10 +46,17 @@ export interface UiState {
   isSidebarOpen: boolean
   activePanel: "messages" | "participants" | "settings" | "export"
   autoFit: boolean
+  /**
+   * Multiplier applied to how long your own text messages take to
+   * "type" during playback. 1 is the default pace; below 1 slows it down,
+   * above 1 speeds it up.
+   */
+  typingSpeed: number
 }
 
 type Snapshot = {
   conversation: Conversation
+  activeChatId: string
   layoutId: LayoutId
   themeId: ThemeId
   activeParticipantId: string
@@ -66,8 +71,28 @@ interface HistoryState {
   future: Snapshot[]
 }
 
+export interface MessagePayload {
+  senderId: string
+  content: string
+  imageUrl?: string
+  timestamp: string
+  type: MessageType
+  status: MessageStatus
+  delayMs?: number
+  notificationOverride?: Message["notificationOverride"]
+  notificationClickable?: boolean
+  notificationOpenDelayMs?: number
+  notificationAutoOpen?: boolean
+  notificationAutoOpenDelayMs?: number
+  linkedChatId?: string
+  returnToParent?: boolean
+  backNavigation?: Message["backNavigation"]
+}
+
 interface ConversationStore {
   conversation: Conversation
+  /** Which chat is currently being edited (ConversationBuilder) and shown in the preview. */
+  activeChatId: string
   layoutId: LayoutId
   themeId: ThemeId
   activeParticipantId: string
@@ -95,6 +120,7 @@ interface ConversationStore {
   setLayout: (layoutId: LayoutId) => void
   setTheme: (themeId: ThemeId) => void
   setActiveParticipant: (participantId: string) => void
+  setActiveChatId: (chatId: string) => void
   setBackgroundImageUrl: (url: string) => void
   setBackgroundImageOpacity: (opacity: number) => void
   clearBackgroundImage: () => void
@@ -103,65 +129,25 @@ interface ConversationStore {
   addParticipant: (participant: Omit<Participant, "id">) => void
   updateParticipant: (participantId: string, updates: Partial<Participant>) => void
   removeParticipant: (participantId: string) => void
-  setGroupName: (groupName: string) => void
-  /** Replaces the full set of who's actually chatting in the main conversation right now. */
-  setConversationMembers: (participantIds: string[]) => void
-  /** Adds/removes a single roster participant from the main conversation. */
-  toggleConversationMember: (participantId: string) => void
-  /** Makes sure a roster participant is a main-chat member, without flipping them off if they already are. */
-  ensureConversationMember: (participantId: string) => void
-  addMessage: (payload: {
-    senderId: string
-    content: string
-    imageUrl?: string
-    timestamp: string
-    type: MessageType
-    status: MessageStatus
-    delayMs?: number
-    notificationOverride?: Message["notificationOverride"]
-    notificationClickable?: boolean
-    notificationOpenDelayMs?: number
-    notificationAutoOpen?: boolean
-    notificationAutoOpenDelayMs?: number
-    linkedParticipantId?: string
-    returnToParent?: boolean
-    backNavigation?: Message["backNavigation"]
-  }) => void
-  updateMessage: (messageId: string, updates: Partial<Message>) => void
-  deleteMessage: (messageId: string) => void
-  duplicateMessage: (messageId: string) => void
-  setMessages: (messages: Message[]) => void
-  /** Applies the same change(s) - date, sender, status, delay - across every message at once. */
-  bulkUpdateMessages: (updates: BulkMessageUpdate) => void
-  /** Adds a message to the side-chat with `participantId`, creating that side-chat first if needed. */
-  addSubConversationMessage: (
-    participantId: string,
-    payload: {
-      senderId: string
-      content: string
-      imageUrl?: string
-      timestamp: string
-      type: MessageType
-      status: MessageStatus
-      delayMs?: number
-      notificationOverride?: Message["notificationOverride"]
-      notificationClickable?: boolean
-      notificationOpenDelayMs?: number
-      notificationAutoOpen?: boolean
-      notificationAutoOpenDelayMs?: number
-      linkedParticipantId?: string
-      returnToParent?: boolean
-      backNavigation?: Message["backNavigation"]
-    },
-  ) => void
-  updateSubConversationMessage: (
-    participantId: string,
-    messageId: string,
-    updates: Partial<Message>,
-  ) => void
-  deleteSubConversationMessage: (participantId: string, messageId: string) => void
-  duplicateSubConversationMessage: (participantId: string, messageId: string) => void
-  setSubConversationMessages: (participantId: string, messages: Message[]) => void
+  /** Creates a brand-new, independent chat with exactly the given members. Returns its id. */
+  createChat: (memberIds: string[], name?: string) => string
+  renameChat: (chatId: string, name: string) => void
+  deleteChat: (chatId: string) => void
+  updateChatMembers: (chatId: string, memberIds: string[]) => void
+  /** Adds a roster participant to a chat, without flipping them off if they're already in it. */
+  ensureChatMember: (chatId: string, participantId: string) => void
+  /**
+   * Finds an existing chat whose members are exactly `memberIds`, or
+   * creates one if none exists. Returns its id.
+   */
+  findOrCreateChatWithMembers: (memberIds: string[], name?: string) => string
+  addMessage: (chatId: string, payload: MessagePayload) => void
+  updateMessage: (chatId: string, messageId: string, updates: Partial<Message>) => void
+  deleteMessage: (chatId: string, messageId: string) => void
+  duplicateMessage: (chatId: string, messageId: string) => void
+  setMessages: (chatId: string, messages: Message[]) => void
+  /** Applies the same change(s) - date, sender, status, delay - to one chat, or every chat at once. */
+  bulkUpdateMessages: (chatId: string | "all", updates: BulkMessageUpdate) => void
   setExportSettings: (settings: Partial<ExportSettings>) => void
   setUi: (updates: Partial<UiState>) => void
   addNotificationSenderName: (name: string) => void
@@ -314,9 +300,8 @@ const buildDefaultConversation = (): Conversation => {
   const updatedAt = new Date()
   const firstTimestamp = updatedAt.getTime() - (defaultMessageSeed.length - 1) * 60_000
   const participants = normalizeParticipants(defaultParticipants)
-  return {
-    id: "conv-1",
-    participants,
+  const chat: Chat = {
+    id: "chat-1",
     memberIds: participants.map((participant) => participant.id),
     messages: defaultMessageSeed.map((message, index) => ({
       id: `m${index + 1}`,
@@ -324,6 +309,11 @@ const buildDefaultConversation = (): Conversation => {
       timestamp: new Date(firstTimestamp + index * 60_000).toISOString(),
       delayMs: DEFAULT_MESSAGE_DELAY_MS,
     })),
+  }
+  return {
+    id: "conv-1",
+    participants,
+    chats: [chat],
     metadata: {
       createdAt: new Date(firstTimestamp).toISOString(),
       updatedAt: updatedAt.toISOString(),
@@ -349,6 +339,7 @@ const defaultUiState: UiState = {
   isSidebarOpen: true,
   activePanel: "messages",
   autoFit: true,
+  typingSpeed: 1,
 }
 
 const STORAGE_KEY = "chat-sim-storage"
@@ -383,6 +374,7 @@ const HISTORY_LIMIT = 3
 
 const buildSnapshot = (state: ConversationStore): Snapshot => ({
   conversation: state.conversation,
+  activeChatId: state.activeChatId,
   layoutId: state.layoutId,
   themeId: state.themeId,
   activeParticipantId: state.activeParticipantId,
@@ -400,10 +392,126 @@ const pushHistory = (state: ConversationStore): HistoryState => {
   }
 }
 
+/** Touches metadata.updatedAt - shared by every mutation below. */
+const touchMetadata = (conversation: Conversation): Conversation => ({
+  ...conversation,
+  metadata: { ...conversation.metadata, updatedAt: new Date().toISOString() },
+})
+
+const mapChat = (conversation: Conversation, chatId: string, updater: (chat: Chat) => Chat): Conversation => ({
+  ...conversation,
+  chats: conversation.chats.map((chat) => (chat.id === chatId ? updater(chat) : chat)),
+})
+
+/**
+ * Best-effort migration of a legacy single-main-chat conversation (from
+ * before independent, user-built chats existed) into the current
+ * `chats[]` shape. Accepts loosely-typed input since old exports/persisted
+ * state won't type-check against the current Conversation interface.
+ */
+const migrateLegacyConversation = (raw: Record<string, unknown>): Conversation => {
+  const participants = normalizeParticipants((raw.participants as Participant[]) ?? [])
+  const legacyMemberIds =
+    (raw.memberIds as string[] | undefined) && (raw.memberIds as string[]).length
+      ? (raw.memberIds as string[])
+      : participants.map((participant) => participant.id)
+  const legacyGroupName = raw.groupName as string | undefined
+  const legacyTitle = raw.title as string | undefined
+  const legacyMessages = ((raw.messages as Message[] | undefined) ?? []).map((message) => ({
+    ...message,
+    delayMs: message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
+  }))
+  const legacySubConversations =
+    (raw.subConversations as Array<{ participantId: string; messages: Message[] }> | undefined) ?? []
+
+  const mainChatId = generateId()
+  const chats: Chat[] = [
+    {
+      id: mainChatId,
+      name: legacyMemberIds.length > 2 ? legacyGroupName ?? legacyTitle : undefined,
+      memberIds: legacyMemberIds,
+      messages: legacyMessages,
+    },
+  ]
+
+  // Each old side-chat becomes its own top-level chat between "self" (the
+  // first roster participant, matching the old convention) and the one
+  // participant it belonged to.
+  const selfId = participants[0]?.id
+  const participantIdToChatId = new Map<string, string>()
+  legacySubConversations.forEach((entry) => {
+    const chatId = generateId()
+    participantIdToChatId.set(entry.participantId, chatId)
+    chats.push({
+      id: chatId,
+      memberIds: selfId ? [selfId, entry.participantId] : [entry.participantId],
+      messages: entry.messages.map((message) => ({
+        ...message,
+        delayMs: message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
+      })),
+    })
+  })
+
+  // Remap old linkedParticipantId / backNavigation.autoSelectParticipantId
+  // references (on any message, in any old thread) to the new chat ids.
+  const remapMessage = (message: Message & { linkedParticipantId?: string }): Message => {
+    const next: Message = { ...message }
+    if (message.linkedParticipantId) {
+      const targetChatId = participantIdToChatId.get(message.linkedParticipantId)
+      if (targetChatId) next.linkedChatId = targetChatId
+      delete (next as { linkedParticipantId?: string }).linkedParticipantId
+    }
+    if (next.backNavigation) {
+      const legacyBackNav = next.backNavigation as typeof next.backNavigation & {
+        autoSelectParticipantId?: string
+      }
+      if (legacyBackNav.autoSelectParticipantId) {
+        const targetChatId = participantIdToChatId.get(legacyBackNav.autoSelectParticipantId)
+        next.backNavigation = {
+          ...legacyBackNav,
+          autoSelectChatId: targetChatId,
+        }
+        delete (next.backNavigation as { autoSelectParticipantId?: string }).autoSelectParticipantId
+      }
+    }
+    return next
+  }
+
+  const migratedChats = chats.map((chat) => ({ ...chat, messages: chat.messages.map(remapMessage) }))
+
+  return {
+    id: (raw.id as string) ?? generateId(),
+    participants,
+    chats: migratedChats,
+    metadata: (raw.metadata as Conversation["metadata"]) ?? {
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+  }
+}
+
+/** True once a conversation is already in the current chats[]-based shape. */
+const isCurrentShape = (raw: unknown): raw is Conversation =>
+  Boolean(raw) && Array.isArray((raw as { chats?: unknown }).chats)
+
+const normalizeLoadedConversation = (raw: Conversation | Record<string, unknown>): Conversation => {
+  if (isCurrentShape(raw)) {
+    return {
+      ...raw,
+      participants: normalizeParticipants(raw.participants),
+      chats: raw.chats.length
+        ? raw.chats
+        : [{ id: generateId(), memberIds: raw.participants.map((p) => p.id), messages: [] }],
+    }
+  }
+  return migrateLegacyConversation(raw as Record<string, unknown>)
+}
+
 export const useConversationStore = create<ConversationStore>()(
   persist(
     (set, get) => ({
       conversation: buildDefaultConversation(),
+      activeChatId: "chat-1",
       layoutId: defaultLayoutId,
       themeId: "light",
       activeParticipantId: defaultParticipants[0].id,
@@ -420,18 +528,11 @@ export const useConversationStore = create<ConversationStore>()(
       setLayout: (layoutId) => set((state) => ({ layoutId, history: pushHistory(state) })),
       setTheme: (themeId) => set((state) => ({ themeId, history: pushHistory(state) })),
       setActiveParticipant: (participantId) =>
-        set((state) => {
-          const existingMemberIds =
-            state.conversation.memberIds ?? state.conversation.participants.map((participant) => participant.id)
-          const memberIds = existingMemberIds.includes(participantId)
-            ? existingMemberIds
-            : [...existingMemberIds, participantId]
-          return {
-            activeParticipantId: participantId,
-            conversation: { ...state.conversation, memberIds },
-            history: pushHistory(state),
-          }
-        }),
+        set((state) => ({
+          activeParticipantId: participantId,
+          history: pushHistory(state),
+        })),
+      setActiveChatId: (chatId) => set({ activeChatId: chatId }),
       setBackgroundImageUrl: (url) =>
         set((state) => ({ backgroundImageUrl: url, history: pushHistory(state) })),
       setBackgroundImageOpacity: (opacity) =>
@@ -446,31 +547,18 @@ export const useConversationStore = create<ConversationStore>()(
           const newParticipant: Participant = { id: generateId(), ...participant }
           const nextParticipants = [...state.conversation.participants, newParticipant]
           return {
-            conversation: {
-              ...state.conversation,
-              participants: nextParticipants,
-              metadata: {
-                ...state.conversation.metadata,
-                updatedAt: new Date().toISOString(),
-              },
-            },
+            conversation: touchMetadata({ ...state.conversation, participants: nextParticipants }),
             history: pushHistory(state),
           }
         }),
       updateParticipant: (participantId, updates) =>
         set((state) => ({
-          conversation: {
+          conversation: touchMetadata({
             ...state.conversation,
             participants: state.conversation.participants.map((participant) =>
-              participant.id === participantId
-                ? { ...participant, ...updates }
-                : participant,
+              participant.id === participantId ? { ...participant, ...updates } : participant,
             ),
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
+          }),
           history: pushHistory(state),
         })),
       removeParticipant: (participantId) =>
@@ -482,283 +570,142 @@ export const useConversationStore = create<ConversationStore>()(
             state.activeParticipantId === participantId && remaining.length
               ? remaining[0].id
               : state.activeParticipantId
-          const existingMemberIds =
-            state.conversation.memberIds ?? state.conversation.participants.map((participant) => participant.id)
-          const memberIds = existingMemberIds.filter((id) => id !== participantId)
           return {
             activeParticipantId,
-            conversation: {
+            conversation: touchMetadata({
               ...state.conversation,
               participants: remaining,
-              memberIds,
-              messages: state.conversation.messages.filter(
-                (message) => message.senderId !== participantId,
-              ),
-              subConversations: (state.conversation.subConversations ?? []).filter(
-                (entry) => entry.participantId !== participantId,
-              ),
-              metadata: {
-                ...state.conversation.metadata,
-                updatedAt: new Date().toISOString(),
-              },
-            },
+              chats: state.conversation.chats.map((chat) => ({
+                ...chat,
+                memberIds: chat.memberIds.filter((id) => id !== participantId),
+                messages: chat.messages.filter((message) => message.senderId !== participantId),
+              })),
+            }),
             history: pushHistory(state),
           }
         }),
-      setConversationMembers: (participantIds) =>
+      createChat: (memberIds, name) => {
+        const validIds = new Set(get().conversation.participants.map((participant) => participant.id))
+        const filteredMemberIds = memberIds.filter((id) => validIds.has(id))
+        const newChat: Chat = { id: generateId(), name: name?.trim() || undefined, memberIds: filteredMemberIds, messages: [] }
+        set((state) => ({
+          conversation: touchMetadata({ ...state.conversation, chats: [...state.conversation.chats, newChat] }),
+          history: pushHistory(state),
+        }))
+        return newChat.id
+      },
+      renameChat: (chatId, name) =>
+        set((state) => ({
+          conversation: touchMetadata(
+            mapChat(state.conversation, chatId, (chat) => ({ ...chat, name: name.trim() || undefined })),
+          ),
+          history: pushHistory(state),
+        })),
+      deleteChat: (chatId) =>
+        set((state) => {
+          const remainingChats = state.conversation.chats.filter((chat) => chat.id !== chatId)
+          return {
+            conversation: touchMetadata({ ...state.conversation, chats: remainingChats }),
+            activeChatId:
+              state.activeChatId === chatId ? remainingChats[0]?.id ?? "" : state.activeChatId,
+            history: pushHistory(state),
+          }
+        }),
+      updateChatMembers: (chatId, memberIds) =>
         set((state) => {
           const validIds = new Set(state.conversation.participants.map((participant) => participant.id))
-          const memberIds = participantIds.filter((id) => validIds.has(id))
+          const filtered = memberIds.filter((id) => validIds.has(id))
           return {
-            conversation: {
-              ...state.conversation,
-              memberIds,
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      toggleConversationMember: (participantId) =>
-        set((state) => {
-          const existingMemberIds =
-            state.conversation.memberIds ?? state.conversation.participants.map((participant) => participant.id)
-          const memberIds = existingMemberIds.includes(participantId)
-            ? existingMemberIds.filter((id) => id !== participantId)
-            : [...existingMemberIds, participantId]
-          return {
-            conversation: {
-              ...state.conversation,
-              memberIds,
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      ensureConversationMember: (participantId) =>
-        set((state) => {
-          const existingMemberIds =
-            state.conversation.memberIds ?? state.conversation.participants.map((participant) => participant.id)
-          if (existingMemberIds.includes(participantId)) return state
-          return {
-            conversation: {
-              ...state.conversation,
-              memberIds: [...existingMemberIds, participantId],
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      setGroupName: (groupName) =>
-        set((state) => ({
-          conversation: {
-            ...state.conversation,
-            groupName: isGroupConversation(state.conversation) ? groupName : undefined,
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          history: pushHistory(state),
-        })),
-      addMessage: (payload) =>
-        set((state) => ({
-          conversation: {
-            ...state.conversation,
-            messages: [
-              ...state.conversation.messages,
-              {
-                id: generateId(),
-                ...payload,
-                delayMs: payload.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
-              },
-            ],
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          history: pushHistory(state),
-        })),
-      updateMessage: (messageId, updates) =>
-        set((state) => ({
-          conversation: {
-            ...state.conversation,
-            messages: state.conversation.messages.map((message) =>
-              message.id === messageId ? { ...message, ...updates } : message,
+            conversation: touchMetadata(
+              mapChat(state.conversation, chatId, (chat) => ({ ...chat, memberIds: filtered })),
             ),
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          history: pushHistory(state),
-        })),
-      deleteMessage: (messageId) =>
-        set((state) => ({
-          conversation: {
-            ...state.conversation,
-            messages: state.conversation.messages.filter((message) => message.id !== messageId),
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          history: pushHistory(state),
-        })),
-      duplicateMessage: (messageId) =>
-        set((state) => {
-          const message = state.conversation.messages.find((entry) => entry.id === messageId)
-          if (!message) return state
-          const copy: Message = {
-            ...message,
-            id: generateId(),
-            timestamp: new Date().toISOString(),
-          }
-          return {
-            conversation: {
-              ...state.conversation,
-              messages: [...state.conversation.messages, copy],
-              metadata: {
-                ...state.conversation.metadata,
-                updatedAt: new Date().toISOString(),
-              },
-            },
             history: pushHistory(state),
           }
         }),
-      setMessages: (messages) =>
-        set((state) => ({
-          conversation: {
-            ...state.conversation,
-            messages,
-            metadata: {
-              ...state.conversation.metadata,
-              updatedAt: new Date().toISOString(),
-            },
-          },
-          history: pushHistory(state),
-        })),
-      bulkUpdateMessages: (updates) =>
+      ensureChatMember: (chatId, participantId) =>
         set((state) => {
-          const messages = state.conversation.messages.map((message) =>
-            applyBulkUpdate(message, updates),
-          )
-          const subConversations = updates.includeSubConversations
-            ? (state.conversation.subConversations ?? []).map((entry) => ({
+          const chat = state.conversation.chats.find((entry) => entry.id === chatId)
+          if (!chat || chat.memberIds.includes(participantId)) return state
+          return {
+            conversation: touchMetadata(
+              mapChat(state.conversation, chatId, (entry) => ({
                 ...entry,
-                messages: entry.messages.map((message) => applyBulkUpdate(message, updates)),
-              }))
-            : state.conversation.subConversations
-          return {
-            conversation: {
-              ...state.conversation,
-              messages,
-              subConversations,
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
+                memberIds: [...entry.memberIds, participantId],
+              })),
+            ),
             history: pushHistory(state),
           }
         }),
-      addSubConversationMessage: (participantId, payload) =>
-        set((state) => {
-          const existing = state.conversation.subConversations ?? []
-          const thread = existing.find((entry) => entry.participantId === participantId)
-          const newMessage: Message = {
-            id: generateId(),
-            ...payload,
-            delayMs: payload.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
-          }
-          const nextThreads: SubConversation[] = thread
-            ? existing.map((entry) =>
-                entry.participantId === participantId
-                  ? { ...entry, messages: [...entry.messages, newMessage] }
-                  : entry,
-              )
-            : [...existing, { participantId, messages: [newMessage] }]
-          return {
-            conversation: {
-              ...state.conversation,
-              subConversations: nextThreads,
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      updateSubConversationMessage: (participantId, messageId, updates) =>
-        set((state) => {
-          const existing = state.conversation.subConversations ?? []
-          return {
-            conversation: {
-              ...state.conversation,
-              subConversations: existing.map((entry) =>
-                entry.participantId === participantId
-                  ? {
-                      ...entry,
-                      messages: entry.messages.map((message) =>
-                        message.id === messageId ? { ...message, ...updates } : message,
-                      ),
-                    }
-                  : entry,
+      findOrCreateChatWithMembers: (memberIds, name) => {
+        const existing = get().conversation.chats.find((chat) => sameMemberSet(chat.memberIds, memberIds))
+        if (existing) return existing.id
+        return get().createChat(memberIds, name)
+      },
+      addMessage: (chatId, payload) =>
+        set((state) => ({
+          conversation: touchMetadata(
+            mapChat(state.conversation, chatId, (chat) => ({
+              ...chat,
+              messages: [
+                ...chat.messages,
+                { id: generateId(), ...payload, delayMs: payload.delayMs ?? DEFAULT_MESSAGE_DELAY_MS },
+              ],
+            })),
+          ),
+          history: pushHistory(state),
+        })),
+      updateMessage: (chatId, messageId, updates) =>
+        set((state) => ({
+          conversation: touchMetadata(
+            mapChat(state.conversation, chatId, (chat) => ({
+              ...chat,
+              messages: chat.messages.map((message) =>
+                message.id === messageId ? { ...message, ...updates } : message,
               ),
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      deleteSubConversationMessage: (participantId, messageId) =>
+            })),
+          ),
+          history: pushHistory(state),
+        })),
+      deleteMessage: (chatId, messageId) =>
+        set((state) => ({
+          conversation: touchMetadata(
+            mapChat(state.conversation, chatId, (chat) => ({
+              ...chat,
+              messages: chat.messages.filter((message) => message.id !== messageId),
+            })),
+          ),
+          history: pushHistory(state),
+        })),
+      duplicateMessage: (chatId, messageId) =>
         set((state) => {
-          const existing = state.conversation.subConversations ?? []
-          return {
-            conversation: {
-              ...state.conversation,
-              subConversations: existing.map((entry) =>
-                entry.participantId === participantId
-                  ? { ...entry, messages: entry.messages.filter((message) => message.id !== messageId) }
-                  : entry,
-              ),
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
-      duplicateSubConversationMessage: (participantId, messageId) =>
-        set((state) => {
-          const existing = state.conversation.subConversations ?? []
-          const thread = existing.find((entry) => entry.participantId === participantId)
-          const message = thread?.messages.find((entry) => entry.id === messageId)
-          if (!message) return state
+          const chat = state.conversation.chats.find((entry) => entry.id === chatId)
+          const message = chat?.messages.find((entry) => entry.id === messageId)
+          if (!chat || !message) return state
           const copy: Message = { ...message, id: generateId(), timestamp: new Date().toISOString() }
           return {
-            conversation: {
-              ...state.conversation,
-              subConversations: existing.map((entry) =>
-                entry.participantId === participantId
-                  ? { ...entry, messages: [...entry.messages, copy] }
-                  : entry,
-              ),
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
+            conversation: touchMetadata(
+              mapChat(state.conversation, chatId, (entry) => ({ ...entry, messages: [...entry.messages, copy] })),
+            ),
             history: pushHistory(state),
           }
         }),
-      setSubConversationMessages: (participantId, messages) =>
-        set((state) => {
-          const existing = state.conversation.subConversations ?? []
-          const thread = existing.find((entry) => entry.participantId === participantId)
-          const nextThreads: SubConversation[] = thread
-            ? existing.map((entry) =>
-                entry.participantId === participantId ? { ...entry, messages } : entry,
-              )
-            : [...existing, { participantId, messages }]
-          return {
-            conversation: {
-              ...state.conversation,
-              subConversations: nextThreads,
-              metadata: { ...state.conversation.metadata, updatedAt: new Date().toISOString() },
-            },
-            history: pushHistory(state),
-          }
-        }),
+      setMessages: (chatId, messages) =>
+        set((state) => ({
+          conversation: touchMetadata(mapChat(state.conversation, chatId, (chat) => ({ ...chat, messages }))),
+          history: pushHistory(state),
+        })),
+      bulkUpdateMessages: (chatId, updates) =>
+        set((state) => ({
+          conversation: touchMetadata({
+            ...state.conversation,
+            chats: state.conversation.chats.map((chat) =>
+              chatId === "all" || chat.id === chatId
+                ? { ...chat, messages: chat.messages.map((message) => applyBulkUpdate(message, updates)) }
+                : chat,
+            ),
+          }),
+          history: pushHistory(state),
+        })),
       setExportSettings: (settings) =>
         set((state) => ({
           exportSettings: {
@@ -775,46 +722,35 @@ export const useConversationStore = create<ConversationStore>()(
           const withoutDuplicate = state.notificationSenderNames.filter(
             (existing) => existing.toLowerCase() !== trimmed.toLowerCase(),
           )
-          // Most recently used first, capped so the list doesn't grow forever.
           return { notificationSenderNames: [trimmed, ...withoutDuplicate].slice(0, 30) }
         }),
       setLanguage: (language) => set({ language }),
       setDraftMessage: (draft) => set({ draftMessage: draft }),
       resetConversation: () =>
-        set((state) => ({
-          conversation: buildDefaultConversation(),
-          activeParticipantId: defaultParticipants[0].id,
-          layoutId: defaultLayoutId,
-          themeId: "light",
-          backgroundImageUrl: "",
-          backgroundImageOpacity: 0.35,
-          backgroundColor: "",
-          exportSettings: { ...defaultExportSettings },
-          ui: { ...defaultUiState },
-          draftMessage: null,
-          lastAutosaveAt: null,
-          history: pushHistory(state),
-        })),
+        set((state) => {
+          const conversation = buildDefaultConversation()
+          return {
+            conversation,
+            activeChatId: conversation.chats[0]?.id ?? "",
+            activeParticipantId: defaultParticipants[0].id,
+            layoutId: defaultLayoutId,
+            themeId: "light",
+            backgroundImageUrl: "",
+            backgroundImageOpacity: 0.35,
+            backgroundColor: "",
+            exportSettings: { ...defaultExportSettings },
+            ui: { ...defaultUiState },
+            draftMessage: null,
+            lastAutosaveAt: null,
+            history: pushHistory(state),
+          }
+        }),
       loadConversation: (conversation) => {
-        const legacyTitle = (conversation as { title?: string }).title
-        const participants = normalizeParticipants(conversation.participants)
-        // Older exports (and anything from before side-chats/membership
-        // existed) had no concept of a "benched" character - everyone in
-        // the roster was in the one conversation, so that's the safe default.
-        const memberIds =
-          conversation.memberIds && conversation.memberIds.length
-            ? conversation.memberIds.filter((id) => participants.some((participant) => participant.id === id))
-            : participants.map((participant) => participant.id)
-        const groupName =
-          memberIds.length > 2 ? conversation.groupName ?? legacyTitle ?? "Group Chat" : undefined
+        const normalized = normalizeLoadedConversation(conversation)
         set((state) => ({
-          conversation: {
-            ...conversation,
-            participants,
-            memberIds,
-            groupName,
-          },
-          activeParticipantId: participants[0]?.id ?? "",
+          conversation: normalized,
+          activeChatId: normalized.chats[0]?.id ?? "",
+          activeParticipantId: normalized.participants[0]?.id ?? "",
           history: pushHistory(state),
         }))
       },
@@ -824,6 +760,7 @@ export const useConversationStore = create<ConversationStore>()(
           const previous = state.history.past[state.history.past.length - 1]
           return {
             conversation: previous.conversation,
+            activeChatId: previous.activeChatId,
             layoutId: previous.layoutId,
             themeId: previous.themeId,
             activeParticipantId: previous.activeParticipantId,
@@ -843,6 +780,7 @@ export const useConversationStore = create<ConversationStore>()(
           const next = state.history.future[0]
           return {
             conversation: next.conversation,
+            activeChatId: next.activeChatId,
             layoutId: next.layoutId,
             themeId: next.themeId,
             activeParticipantId: next.activeParticipantId,
@@ -863,6 +801,7 @@ export const useConversationStore = create<ConversationStore>()(
             STORAGE_KEY,
             JSON.stringify({
               conversation: snapshot.conversation,
+              activeChatId: snapshot.activeChatId,
               layoutId: snapshot.layoutId,
               themeId: snapshot.themeId,
               activeParticipantId: snapshot.activeParticipantId,
@@ -884,27 +823,19 @@ export const useConversationStore = create<ConversationStore>()(
     {
       name: STORAGE_KEY,
       storage: createJSONStorage(() => localStorage),
-      version: 5,
+      version: 6,
       migrate: (state) => {
         if (!state) return state
-        const typed = state as ConversationStore
-        const participants = normalizeParticipants(typed.conversation.participants)
+        const typed = state as Record<string, unknown> & {
+          conversation: Record<string, unknown>
+          activeChatId?: string
+          exportSettings?: Partial<ExportSettings>
+        }
+        const conversation = normalizeLoadedConversation(typed.conversation as Conversation)
         return {
           ...typed,
-          conversation: {
-            ...typed.conversation,
-            participants,
-            // Conversations saved before "benched" characters existed had
-            // no concept of it - the whole roster was the one chat.
-            memberIds:
-              typed.conversation.memberIds && typed.conversation.memberIds.length
-                ? typed.conversation.memberIds
-                : participants.map((participant) => participant.id),
-            messages: typed.conversation.messages.map((message) => ({
-              ...message,
-              delayMs: message.delayMs ?? DEFAULT_MESSAGE_DELAY_MS,
-            })),
-          },
+          conversation,
+          activeChatId: typed.activeChatId ?? conversation.chats[0]?.id ?? "",
           exportSettings: {
             ...defaultExportSettings,
             ...typed.exportSettings,
@@ -913,6 +844,7 @@ export const useConversationStore = create<ConversationStore>()(
       },
       partialize: (state) => ({
         conversation: state.conversation,
+        activeChatId: state.activeChatId,
         layoutId: state.layoutId,
         themeId: state.themeId,
         activeParticipantId: state.activeParticipantId,

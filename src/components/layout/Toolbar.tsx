@@ -116,7 +116,7 @@ export const Toolbar = () => {
   const theme = layout.themes.find((entry) => entry.id === themeId) ?? layout.themes[0]
   const projectBadges = [
     `${conversation.participants.length} ${t.toolbar.participants}`,
-    `${conversation.messages.length} ${t.toolbar.messages}`,
+    `${conversation.chats.reduce((sum, chat) => sum + chat.messages.length, 0)} ${t.toolbar.messages}`,
     `${layout.name} ${theme.name}`,
   ]
 

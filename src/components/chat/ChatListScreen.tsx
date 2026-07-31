@@ -1,5 +1,4 @@
 import { Search, SquarePen } from "lucide-react"
-import type { Participant } from "@/types/conversation"
 import type { LayoutTheme } from "@/types/layout"
 import { AvatarImage } from "@/components/ui/avatar-image"
 import { VerifiedBadge } from "@/components/ui/verified-badge"
@@ -14,14 +13,22 @@ export interface ChatListPreview {
   timestamp?: string
 }
 
+/** One row on the simulated home screen - one of the project's other chats. */
+export interface ChatListEntry {
+  id: string
+  title: string
+  avatarUrl?: string
+  isVerified?: boolean
+}
+
 interface ChatListScreenProps {
-  /** Contacts to list - normally every participant except "you". */
-  participants: Participant[]
-  /** Last-message preview per participant id, if that contact has any messages yet. */
+  /** Every other chat to list here - normally every chat except the one currently open. */
+  chats: ChatListEntry[]
+  /** Last-message preview per chat id, if that chat has any messages yet. */
   previews?: Record<string, ChatListPreview>
   theme: LayoutTheme
   style?: ChatListStyle
-  onSelectParticipant: (participantId: string) => void
+  onSelectChat: (chatId: string) => void
 }
 
 /**
@@ -31,11 +38,11 @@ interface ChatListScreenProps {
  * the iMessage look is implemented right now.
  */
 export const ChatListScreen = ({
-  participants,
+  chats,
   previews = {},
   theme,
   style: _style = "imessage",
-  onSelectParticipant,
+  onSelectChat,
 }: ChatListScreenProps) => {
   return (
     <div
@@ -64,24 +71,24 @@ export const ChatListScreen = ({
         </div>
       </div>
       <div className="hide-scrollbar flex-1 overflow-y-auto">
-        {participants.length === 0 ? (
+        {chats.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm" style={{ color: theme.colors.muted }}>
             No conversations yet.
           </div>
         ) : (
-          participants.map((participant) => {
-            const preview = previews[participant.id]
-            const fallbackText = participant.name.slice(0, 2).toUpperCase()
+          chats.map((chat) => {
+            const preview = previews[chat.id]
+            const fallbackText = chat.title.slice(0, 2).toUpperCase()
             return (
               <button
-                key={participant.id}
+                key={chat.id}
                 type="button"
-                onClick={() => onSelectParticipant(participant.id)}
+                onClick={() => onSelectChat(chat.id)}
                 className="flex w-full items-center gap-3 border-b px-4 py-2.5 text-left"
                 style={{ borderColor: theme.colors.border }}
               >
-                {participant.avatarUrl ? (
-                  <AvatarImage src={participant.avatarUrl} alt={participant.name} className="h-12 w-12" />
+                {chat.avatarUrl ? (
+                  <AvatarImage src={chat.avatarUrl} alt={chat.title} className="h-12 w-12" />
                 ) : (
                   <span
                     className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
@@ -93,8 +100,8 @@ export const ChatListScreen = ({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1 truncate font-semibold">
-                      {participant.name}
-                      {participant.isVerified ? <VerifiedBadge className="h-3.5 w-3.5" /> : null}
+                      {chat.title}
+                      {chat.isVerified ? <VerifiedBadge className="h-3.5 w-3.5" /> : null}
                     </span>
                     {preview?.timestamp ? (
                       <span className="shrink-0 text-xs" style={{ color: theme.colors.muted }}>

@@ -10,11 +10,19 @@ interface UseConversationPlaybackOptions {
    * The participant treated as "you". When the message about to be revealed
    * belongs to this participant, we simulate real on-device typing (letters
    * appearing progressively in the message input) instead of the generic
-   * "..." dots bubble used for everyone else.
+   * "...” dots bubble used for everyone else.
    */
   selfId?: string
-  /** Each linkable participant's own (visible) messages, keyed by participantId. */
-  subConversations?: Record<string, Message[]>
+  /** Every chat's own (visible) messages, keyed by chat id. */
+  chats?: Record<string, Message[]>
+  /** Which chat the preview should be showing/playing while nothing else has redirected it. */
+  initialChatId?: string
+  /**
+   * Multiplier applied to how long selfId's own text messages take to
+   * "type" (both the keystroke simulation and its length-derived duration).
+   * 1 is the default pace; below 1 slows it down, above 1 speeds it up.
+   */
+  typingSpeed?: number
 }
 
 /**
@@ -23,16 +31,13 @@ interface UseConversationPlaybackOptions {
  * never advances on its own, it just sits there until a contact is tapped
  * (openFromHome) or the user steps back in history.
  */
-export type ActiveThread =
-  | { kind: "main" }
-  | { kind: "sub"; participantId: string }
-  | { kind: "home" }
+export type ActiveThread = { kind: "chat"; chatId: string } | { kind: "home" }
 
 /** A single point in the playback timeline - used to step back/forward. */
 interface HistorySnapshot {
   thread: ActiveThread
-  revealCount: number
-  subRevealCount: number
+  /** How many messages of EACH chat had been revealed at this point. */
+  revealCounts: Record<string, number>
 }
 
 /** How long the notification banner stays up before it slides away. */
@@ -72,11 +77,16 @@ interface PausedPhase extends Omit<RunningPhase, "startedAt"> {
   remainingMs: number
 }
 
+const emptyChats: Record<string, Message[]> = {}
+
 export const useConversationPlayback = (
-  messages: Message[],
-  { soundEnabled = true, selfId, subConversations = {} }: UseConversationPlaybackOptions = {},
+  { soundEnabled = true, selfId, chats = emptyChats, initialChatId = "", typingSpeed = 1 }: UseConversationPlaybackOptions = {},
 ) => {
-  const [revealCount, setRevealCount] = useState(messages.length)
+  // How many messages of EACH chat have been revealed - preserved per chat
+  // id, the same way the old build kept a separate counter for "main" and
+  // for whichever one side-chat was open, just generalized to any number
+  // of independent chats.
+  const [revealCounts, setRevealCounts] = useState<Record<string, number>>({})
   const [typingSenderId, setTypingSenderId] = useState<string | null>(null)
   // Progressively revealed text for the message currently being "typed" by
   // `selfId`, mimicking real keystrokes landing in the phone's own input
@@ -89,11 +99,10 @@ export const useConversationPlayback = (
   const [isPaused, setIsPaused] = useState(false)
   const [bannerMessage, setBannerMessage] = useState<Message | null>(null)
   const [bannerVisible, setBannerVisible] = useState(false)
-  // Which chat the preview is currently showing. "main" unless a clickable,
-  // linked notification has been tapped (or auto-tapped) and its side-chat
-  // is now open.
-  const [activeThread, setActiveThread] = useState<ActiveThread>({ kind: "main" })
-  const [subRevealCount, setSubRevealCount] = useState(0)
+  // Which chat the preview is currently showing. Starts at initialChatId
+  // unless a clickable, linked notification (or backNavigation) has moved
+  // it elsewhere.
+  const [activeThread, setActiveThread] = useState<ActiveThread>({ kind: "chat", chatId: initialChatId })
   // Mirrors historyRef/historyIndexRef purely so the UI can enable/disable
   // the step back/forward buttons - the refs below are the source of truth.
   const [stepState, setStepState] = useState({ canStepBack: false, canStepForward: false })
@@ -101,24 +110,25 @@ export const useConversationPlayback = (
   const bannerTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([])
   const keystrokeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Kept fresh via effect below so the resume-after-side-chat continuation
+  // Kept fresh via effect below so the resume-after-linked-chat continuation
   // (which can fire long after `play()` was originally called) always sees
   // the latest props instead of a stale closure.
-  const messagesRef = useRef(messages)
+  const chatsRef = useRef(chats)
   const selfIdRef = useRef(selfId)
-  const subConversationsRef = useRef(subConversations)
   const soundEnabledRef = useRef(soundEnabled)
+  const typingSpeedRef = useRef(typingSpeed)
   useEffect(() => {
-    messagesRef.current = messages
+    chatsRef.current = chats
     selfIdRef.current = selfId
-    subConversationsRef.current = subConversations
     soundEnabledRef.current = soundEnabled
+    typingSpeedRef.current = typingSpeed
   })
 
-  // Index in the main thread to resume at once a linked side-chat that was
-  // opened from it finishes (or scripts a return). Only meaningful while
-  // activeThread.kind === "sub".
-  const pendingMainResumeIndexRef = useRef(0)
+  // Which chat/index to resume once the currently-open linked (or
+  // home-opened) chat returns or hits a returnToParent message. Only ever
+  // holds one level - exactly like the old build's single main-resume
+  // slot, just generalized from "main" to "whichever chat we left".
+  const pendingResumeRef = useRef<{ chatId: string; index: number } | null>(null)
 
   // Whichever timer-driven phase is currently ticking down (or null when
   // nothing is scheduled, e.g. waiting for a notification tap).
@@ -134,16 +144,43 @@ export const useConversationPlayback = (
 
   // Every revealed message pushes a snapshot here. Stepping back/forward
   // just walks this list instead of trying to re-derive "what was on screen
-  // two moves ago", which would be ambiguous once side-chats are involved.
-  const historyRef = useRef<HistorySnapshot[]>([{ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 }])
+  // two moves ago", which would be ambiguous once linked chats are involved.
+  const historyRef = useRef<HistorySnapshot[]>([
+    { thread: { kind: "chat", chatId: initialChatId }, revealCounts: {} },
+  ])
   const historyIndexRef = useRef(0)
 
+  // Whether there's at least one more message to reveal live from `thread`
+  // at its current reveal count - i.e. content that genuinely exists but
+  // hasn't been stepped into yet, as opposed to a future already recorded
+  // in history from an earlier rewind. Folding this into canStepForward
+  // means the forward control stays enabled while a live play session is
+  // running, instead of only ever allowing forward motion through
+  // already-visited territory.
+  const hasMoreToRevealLive = (thread: ActiveThread, counts: Record<string, number>) => {
+    if (thread.kind === "home") return false
+    const msgs = chatsRef.current[thread.chatId] ?? []
+    const idx = counts[thread.chatId] ?? 0
+    return idx < msgs.length
+  }
+
   const syncStepState = () => {
+    const current = historyRef.current[historyIndexRef.current]
     setStepState({
       canStepBack: historyIndexRef.current > 0,
-      canStepForward: historyIndexRef.current < historyRef.current.length - 1,
+      canStepForward:
+        historyIndexRef.current < historyRef.current.length - 1 ||
+        hasMoreToRevealLive(current.thread, current.revealCounts),
     })
   }
+
+  // Keeps the buttons honest any time the underlying data changes shape
+  // (messages added/removed while idle, a linked chat's own messages
+  // changing, etc.) - not just right after a reveal/step/play call.
+  useEffect(() => {
+    syncStepState()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chats, activeThread, revealCounts])
 
   const pushHistory = (snapshot: HistorySnapshot) => {
     historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1)
@@ -220,21 +257,23 @@ export const useConversationPlayback = (
     bannerTimeoutsRef.current.push(hideTimeout)
   }
 
-  // Keep everything visible by default (e.g. while editing in the builder).
-  useEffect(() => {
-    if (!isPlaying) {
-      setRevealCount(messages.length)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages.length])
-
-  // Same as above, but for whichever linked side-chat is currently open.
+  // Keep everything visible by default (e.g. while editing in the builder) -
+  // every chat fully revealed, not just the one currently on screen.
   useEffect(() => {
     if (isPlaying) return
-    if (activeThread.kind !== "sub") return
-    const msgs = subConversations[activeThread.participantId] ?? []
-    setSubRevealCount(msgs.length)
-  }, [isPlaying, activeThread, subConversations])
+    setRevealCounts(
+      Object.fromEntries(Object.entries(chats).map(([chatId, msgs]) => [chatId, msgs.length])),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, chats])
+
+  // Follows whichever chat is being edited/previewed elsewhere in the app,
+  // as long as nothing is actively playing right now.
+  useEffect(() => {
+    if (isPlaying) return
+    setActiveThread({ kind: "chat", chatId: initialChatId })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, initialChatId])
 
   const stop = () => {
     clearPendingTimeout()
@@ -243,20 +282,23 @@ export const useConversationPlayback = (
     runningPhaseRef.current = null
     pausedPhaseRef.current = null
     pausedBannerRemainingRef.current = null
+    pendingResumeRef.current = null
     setIsPlaying(false)
     setIsPaused(false)
     setTypingSenderId(null)
     setTypingDraftText(null)
-    setRevealCount(messages.length)
-    setActiveThread({ kind: "main" })
-    setSubRevealCount(0)
-    resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
+    const thread: ActiveThread = { kind: "chat", chatId: initialChatId }
+    setActiveThread(thread)
+    setRevealCounts(
+      Object.fromEntries(Object.entries(chatsRef.current).map(([chatId, msgs]) => [chatId, msgs.length])),
+    )
+    resetHistory({ thread, revealCounts: {} })
   }
 
   // Works out how long a message should "type" for and how long to wait
   // after, including the real-keystroke simulation for the current
-  // participant's own text messages. Shared by both the main thread and any
-  // side-chat, since the logic doesn't depend on which one it's playing.
+  // participant's own text messages. Shared by every chat, since the logic
+  // doesn't depend on which one it's playing.
   const prepareMessageTiming = (message: Message) => {
     const text = message.content
     const isOwnTextMessage =
@@ -269,11 +311,16 @@ export const useConversationPlayback = (
     let restMs: number
 
     if (isOwnTextMessage) {
-      const keystrokeDelay = Math.min(
-        MAX_KEYSTROKE_MS,
-        Math.max(MIN_KEYSTROKE_MS, MAX_OWN_TYPING_MS / text.length),
-      )
-      typingMs = Math.min(MAX_OWN_TYPING_MS, Math.max(MIN_OWN_TYPING_MS, text.length * keystrokeDelay))
+      // A speed of 1 reproduces the original fixed bounds exactly; higher
+      // speeds shrink them (types faster), lower speeds stretch them (types
+      // slower). Guard against a zero/negative value reaching here somehow.
+      const speed = typingSpeedRef.current > 0 ? typingSpeedRef.current : 1
+      const minKeystrokeMs = MIN_KEYSTROKE_MS / speed
+      const maxKeystrokeMs = MAX_KEYSTROKE_MS / speed
+      const minOwnTypingMs = MIN_OWN_TYPING_MS / speed
+      const maxOwnTypingMs = MAX_OWN_TYPING_MS / speed
+      const keystrokeDelay = Math.min(maxKeystrokeMs, Math.max(minKeystrokeMs, maxOwnTypingMs / text.length))
+      typingMs = Math.min(maxOwnTypingMs, Math.max(minOwnTypingMs, text.length * keystrokeDelay))
       // No artificial pause after typing finishes - the message sends the
       // instant the simulated keystrokes finish, purely auto-timed from its
       // own length. (message.delayMs is intentionally ignored here now.)
@@ -330,24 +377,22 @@ export const useConversationPlayback = (
     }
   }
 
-  // Applies the visible effects of a message becoming revealed - bumping the
-  // right reveal counter, playing the pop sound, showing a banner if it's a
-  // notification, and recording a history snapshot for step back/forward.
+  // Applies the visible effects of a message becoming revealed - bumping
+  // that chat's reveal counter, playing the pop sound, showing a banner if
+  // it's a notification, and recording a history snapshot for step
+  // back/forward.
   const applyReveal = (thread: ActiveThread, index: number, message: Message, restMs: number) => {
-    const newRevealCount = thread.kind === "main" ? index + 1 : revealCount
-    const newSubRevealCount = thread.kind === "sub" ? index + 1 : 0
-    if (thread.kind === "main") {
-      setRevealCount(newRevealCount)
-    } else {
-      setSubRevealCount(newSubRevealCount)
-    }
+    if (thread.kind === "home") return
+    const newCount = index + 1
+    const nextRevealCounts = { ...revealCounts, [thread.chatId]: newCount }
+    setRevealCounts(nextRevealCounts)
     if (soundEnabledRef.current && message.type !== "system") {
       playMessageSound()
     }
     if (message.type === "notification") {
       showBanner(message, restMs, { persist: Boolean(message.notificationClickable) })
     }
-    pushHistory({ thread, revealCount: newRevealCount, subRevealCount: newSubRevealCount })
+    pushHistory({ thread, revealCounts: nextRevealCounts })
   }
 
   const advance = (thread: ActiveThread, index: number) => {
@@ -358,7 +403,7 @@ export const useConversationPlayback = (
       setIsPaused(false)
       return
     }
-    const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
+    const msgs = chatsRef.current[thread.chatId] ?? []
     if (index >= msgs.length) {
       setIsPlaying(false)
       setIsPaused(false)
@@ -400,21 +445,21 @@ export const useConversationPlayback = (
     setTypingDraftText(null)
     applyReveal(thread, index, message, restMs)
 
-    // A clickable notification that's linked to a real side-chat pauses the
-    // main thread right here - only a tap (real or auto-scripted) moves the
-    // story forward from this point.
+    // A clickable notification that's linked to another chat pauses right
+    // here - only a tap (real or auto-scripted) moves the story forward
+    // from this point.
     const opensLinkedThread =
-      thread.kind === "main" &&
+      thread.kind === "chat" &&
       message.type === "notification" &&
       Boolean(message.notificationClickable) &&
-      Boolean(message.linkedParticipantId)
+      Boolean(message.linkedChatId)
     if (opensLinkedThread) {
-      pendingMainResumeIndexRef.current = index + 1
+      pendingResumeRef.current = { chatId: thread.chatId, index: index + 1 }
       runningPhaseRef.current = null
       return
     }
 
-    const isReturn = thread.kind === "sub" && Boolean(message.returnToParent)
+    const isReturn = thread.kind === "chat" && Boolean(message.returnToParent)
     startRestingPhase(thread, index, message, restMs, isReturn)
   }
 
@@ -438,11 +483,11 @@ export const useConversationPlayback = (
       startedAt: Date.now(),
     }
     timeoutRef.current = setTimeout(() => {
-      if (isReturn) {
-        setActiveThread({ kind: "main" })
-        setSubRevealCount(0)
+      if (isReturn && pendingResumeRef.current) {
+        const target: ActiveThread = { kind: "chat", chatId: pendingResumeRef.current.chatId }
+        setActiveThread(target)
         runningPhaseRef.current = null
-        advance({ kind: "main" }, pendingMainResumeIndexRef.current)
+        advance(target, pendingResumeRef.current.index)
       } else {
         advance(thread, index + 1)
       }
@@ -456,15 +501,16 @@ export const useConversationPlayback = (
     runningPhaseRef.current = null
     pausedPhaseRef.current = null
     pausedBannerRemainingRef.current = null
+    pendingResumeRef.current = null
     setIsPlaying(true)
     setIsPaused(false)
     setTypingSenderId(null)
     setTypingDraftText(null)
-    setRevealCount(0)
-    setActiveThread({ kind: "main" })
-    setSubRevealCount(0)
-    resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
-    advance({ kind: "main" }, 0)
+    const thread: ActiveThread = { kind: "chat", chatId: initialChatId }
+    setRevealCounts({ [initialChatId]: 0 })
+    setActiveThread(thread)
+    resetHistory({ thread, revealCounts: { [initialChatId]: 0 } })
+    advance(thread, 0)
   }
 
   // Freezes playback exactly where it is - the current message stays
@@ -539,11 +585,11 @@ export const useConversationPlayback = (
       } else {
         runningPhaseRef.current = { ...phase, restMs: phase.remainingMs, startedAt: Date.now() }
         timeoutRef.current = setTimeout(() => {
-          if (phase.isReturn) {
-            setActiveThread({ kind: "main" })
-            setSubRevealCount(0)
+          if (phase.isReturn && pendingResumeRef.current) {
+            const target: ActiveThread = { kind: "chat", chatId: pendingResumeRef.current.chatId }
+            setActiveThread(target)
             runningPhaseRef.current = null
-            advance({ kind: "main" }, pendingMainResumeIndexRef.current)
+            advance(target, pendingResumeRef.current.index)
           } else {
             advance(phase.thread, phase.index + 1)
           }
@@ -555,7 +601,7 @@ export const useConversationPlayback = (
     // Nothing was mid-flight (e.g. the user had stepped manually, or
     // playback was sitting idle waiting for a notification tap) - just
     // keep going forward from the current position.
-    const idx = activeThread.kind === "main" ? revealCount : subRevealCount
+    const idx = activeThread.kind === "chat" ? revealCounts[activeThread.chatId] ?? 0 : 0
     advance(activeThread, idx)
   }
 
@@ -573,14 +619,14 @@ export const useConversationPlayback = (
 
   // Shared by the cold-start and warm cases of stepForward(): instantly
   // reveals message `index` of `thread` and applies whatever branch it
-  // triggers (opening a linked side-chat, or returning from one).
+  // triggers (opening a linked chat, or returning from one).
   const revealNextLive = (thread: ActiveThread, index: number) => {
     if (thread.kind === "home") {
       setIsPlaying(false)
       setIsPaused(false)
       return
     }
-    const msgs = thread.kind === "main" ? messagesRef.current : subConversationsRef.current[thread.participantId] ?? []
+    const msgs = chatsRef.current[thread.chatId] ?? []
     if (index >= msgs.length) {
       setIsPlaying(false)
       setIsPaused(false)
@@ -590,24 +636,21 @@ export const useConversationPlayback = (
     const { restMs } = prepareMessageTiming(message)
     applyReveal(thread, index, message, restMs)
 
-    if (
-      thread.kind === "main" &&
-      message.type === "notification" &&
-      message.notificationClickable &&
-      message.linkedParticipantId
-    ) {
-      const participantId = message.linkedParticipantId
-      pendingMainResumeIndexRef.current = index + 1
+    if (message.type === "notification" && message.notificationClickable && message.linkedChatId) {
+      const chatId = message.linkedChatId
+      pendingResumeRef.current = { chatId: thread.chatId, index: index + 1 }
       dismissBanner()
-      setActiveThread({ kind: "sub", participantId })
-      setSubRevealCount(0)
-      pushHistory({ thread: { kind: "sub", participantId }, revealCount: index + 1, subRevealCount: 0 })
+      const target: ActiveThread = { kind: "chat", chatId }
+      setActiveThread(target)
+      const nextRevealCounts = { ...revealCounts, [chatId]: 0 }
+      setRevealCounts(nextRevealCounts)
+      pushHistory({ thread: target, revealCounts: nextRevealCounts })
       return
     }
-    if (thread.kind === "sub" && message.returnToParent) {
-      setActiveThread({ kind: "main" })
-      setSubRevealCount(0)
-      pushHistory({ thread: { kind: "main" }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
+    if (message.returnToParent && pendingResumeRef.current) {
+      const target: ActiveThread = { kind: "chat", chatId: pendingResumeRef.current.chatId }
+      setActiveThread(target)
+      pushHistory({ thread: target, revealCounts })
     }
   }
 
@@ -622,20 +665,19 @@ export const useConversationPlayback = (
       const snap = historyRef.current[historyIndexRef.current]
       syncStepState()
       setActiveThread(snap.thread)
-      setRevealCount(snap.revealCount)
-      setSubRevealCount(snap.subRevealCount)
+      setRevealCounts(snap.revealCounts)
       return
     }
 
     // Cold start - nothing has played yet.
     if (!isPlaying) {
       freezeForManualStep()
-      setRevealCount(0)
-      setActiveThread({ kind: "main" })
-      setSubRevealCount(0)
-      resetHistory({ thread: { kind: "main" }, revealCount: 0, subRevealCount: 0 })
+      const thread: ActiveThread = { kind: "chat", chatId: initialChatId }
+      setActiveThread(thread)
+      setRevealCounts({ [initialChatId]: 0 })
+      resetHistory({ thread, revealCounts: { [initialChatId]: 0 } })
       dismissBanner()
-      revealNextLive({ kind: "main" }, 0)
+      revealNextLive(thread, 0)
       return
     }
 
@@ -643,13 +685,13 @@ export const useConversationPlayback = (
 
     freezeForManualStep()
     const thread = activeThread
-    const idx = thread.kind === "main" ? revealCount : subRevealCount
+    const idx = revealCounts[thread.chatId] ?? 0
     revealNextLive(thread, idx)
   }
 
   // Hides the most recently revealed message and freezes there - like
   // stepping a video backward one frame. Walks the recorded history so
-  // side-chat boundaries are undone correctly instead of guessed at.
+  // linked-chat boundaries are undone correctly instead of guessed at.
   const stepBack = () => {
     if (historyIndexRef.current <= 0) return
     freezeForManualStep()
@@ -658,14 +700,104 @@ export const useConversationPlayback = (
     const snap = historyRef.current[historyIndexRef.current]
     syncStepState()
     setActiveThread(snap.thread)
-    setRevealCount(snap.revealCount)
-    setSubRevealCount(snap.subRevealCount)
+    setRevealCounts(snap.revealCounts)
   }
 
-  // Opens the side-chat linked to `participantId` (called once a clickable
-  // notification is actually tapped, live or auto-scripted): pauses the
-  // main thread and starts playing that participant's own messages instead.
-  const openLinkedConversation = (participantId: string) => {
+  // Pure computation (no state writes) of every history snapshot between
+  // `startThread`/`startCounts` and the very end of the story, following
+  // linked-chat detours along the way exactly like revealNextLive does
+  // live, message by message - just without any timers. Used by
+  // jumpToEnd() to seek straight to the last frame in one go, the way
+  // scrubbing a video timeline to the end doesn't play every frame in
+  // between.
+  const computeSnapshotsToEnd = (startThread: ActiveThread, startCounts: Record<string, number>) => {
+    const snapshots: HistorySnapshot[] = []
+    let curThread = startThread
+    let curCounts = startCounts
+    let pendingResume = pendingResumeRef.current
+    let lastMessage: Message | null = null
+
+    // Safety valve: a malformed/cyclic script (e.g. two chats whose
+    // messages keep returning to each other) should never hang the tab.
+    let guard = 0
+    const GUARD_LIMIT = 100000
+    while (guard++ < GUARD_LIMIT) {
+      if (curThread.kind === "home") break
+      const msgs = chatsRef.current[curThread.chatId] ?? []
+      const idx = curCounts[curThread.chatId] ?? 0
+      if (idx >= msgs.length) break
+      const message = msgs[idx]
+      lastMessage = message
+
+      curCounts = { ...curCounts, [curThread.chatId]: idx + 1 }
+
+      const opensLinkedThread =
+        message.type === "notification" && Boolean(message.notificationClickable) && Boolean(message.linkedChatId)
+
+      if (opensLinkedThread) {
+        pendingResume = { chatId: curThread.chatId, index: idx + 1 }
+        curThread = { kind: "chat", chatId: message.linkedChatId! }
+        curCounts = { ...curCounts, [curThread.chatId]: 0 }
+        snapshots.push({ thread: curThread, revealCounts: curCounts })
+        continue
+      }
+
+      if (message.returnToParent && pendingResume) {
+        curThread = { kind: "chat", chatId: pendingResume.chatId }
+        snapshots.push({ thread: curThread, revealCounts: curCounts })
+        continue
+      }
+
+      snapshots.push({ thread: curThread, revealCounts: curCounts })
+    }
+
+    return { snapshots, pendingResume, lastMessage }
+  }
+
+  // Jumps straight to the end of the story - like scrubbing a video all
+  // the way to its last frame - instead of waiting for playback to finish
+  // or clicking stepForward one message at a time.
+  const jumpToEnd = () => {
+    freezeForManualStep()
+    dismissBanner()
+    const current = historyRef.current[historyIndexRef.current]
+    const { snapshots, pendingResume, lastMessage } = computeSnapshotsToEnd(current.thread, current.revealCounts)
+    if (snapshots.length === 0) return
+
+    historyRef.current = [...historyRef.current.slice(0, historyIndexRef.current + 1), ...snapshots]
+    historyIndexRef.current = historyRef.current.length - 1
+    pendingResumeRef.current = pendingResume
+    syncStepState()
+
+    const last = snapshots[snapshots.length - 1]
+    setActiveThread(last.thread)
+    setRevealCounts(last.revealCounts)
+
+    // Show the final message's banner if it's a notification, matching
+    // what would be on screen had we stepped there one message at a time.
+    if (lastMessage && lastMessage.type === "notification") {
+      showBanner(lastMessage, 0, { persist: Boolean(lastMessage.notificationClickable) })
+    }
+  }
+
+  // Jumps straight back to the very first frame - the counterpart to
+  // jumpToEnd().
+  const jumpToStart = () => {
+    if (historyIndexRef.current <= 0) return
+    freezeForManualStep()
+    dismissBanner()
+    historyIndexRef.current = 0
+    pendingResumeRef.current = null
+    const snap = historyRef.current[0]
+    syncStepState()
+    setActiveThread(snap.thread)
+    setRevealCounts(snap.revealCounts)
+  }
+
+  // Opens the chat linked to `chatId` (called once a clickable notification
+  // is actually tapped, live or auto-scripted): pauses the current chat and
+  // starts playing that chat's own messages instead.
+  const openLinkedConversation = (chatId: string) => {
     clearPendingTimeout()
     clearKeystrokeInterval()
     dismissBanner()
@@ -673,17 +805,18 @@ export const useConversationPlayback = (
     pausedPhaseRef.current = null
     pausedBannerRemainingRef.current = null
     setIsPaused(false)
-    setActiveThread({ kind: "sub", participantId })
-    setSubRevealCount(0)
-    pushHistory({ thread: { kind: "sub", participantId }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
-    advance({ kind: "sub", participantId }, 0)
+    const target: ActiveThread = { kind: "chat", chatId }
+    setActiveThread(target)
+    const nextRevealCounts = { ...revealCounts, [chatId]: 0 }
+    setRevealCounts(nextRevealCounts)
+    pushHistory({ thread: target, revealCounts: nextRevealCounts })
+    advance(target, 0)
   }
 
-  // Leaves whichever chat is currently open (main or a side-chat) for the
-  // simulated home screen - triggered when the currently-last-shown
-  // message has backNavigation.enabled and the header's back button is
-  // tapped. If we're backing out of the main thread, remember where it
-  // paused so a later returnToParent (from a chat opened off the home
+  // Leaves whichever chat is currently open for the simulated home screen -
+  // triggered when the currently-last-shown message has backNavigation.
+  // enabled and the header's back button is tapped. Remembers where this
+  // chat paused so a later returnToParent (from a chat opened off the home
   // screen) can still resume it right where it left off.
   const goHome = () => {
     clearPendingTimeout()
@@ -692,21 +825,19 @@ export const useConversationPlayback = (
     runningPhaseRef.current = null
     pausedPhaseRef.current = null
     pausedBannerRemainingRef.current = null
-    if (activeThread.kind === "main") {
-      pendingMainResumeIndexRef.current = revealCount
+    if (activeThread.kind === "chat") {
+      pendingResumeRef.current = { chatId: activeThread.chatId, index: revealCounts[activeThread.chatId] ?? 0 }
     }
     setTypingSenderId(null)
     setTypingDraftText(null)
     setIsPaused(false)
     setActiveThread({ kind: "home" })
-    setSubRevealCount(0)
-    pushHistory({ thread: { kind: "home" }, revealCount, subRevealCount: 0 })
+    pushHistory({ thread: { kind: "home" }, revealCounts })
   }
 
   // Tapping a contact on the home screen: opens a real, separate chat with
-  // them (their entry in conversation.subConversations) - same mechanism a
-  // clickable, linked notification uses.
-  const openFromHome = (participantId: string) => {
+  // them - same mechanism a clickable, linked notification uses.
+  const openFromHome = (chatId: string) => {
     clearPendingTimeout()
     clearKeystrokeInterval()
     dismissBanner()
@@ -714,11 +845,13 @@ export const useConversationPlayback = (
     pausedPhaseRef.current = null
     pausedBannerRemainingRef.current = null
     setIsPaused(false)
-    setActiveThread({ kind: "sub", participantId })
-    setSubRevealCount(0)
-    pushHistory({ thread: { kind: "sub", participantId }, revealCount: pendingMainResumeIndexRef.current, subRevealCount: 0 })
+    const target: ActiveThread = { kind: "chat", chatId }
+    setActiveThread(target)
+    const nextRevealCounts = { ...revealCounts, [chatId]: 0 }
+    setRevealCounts(nextRevealCounts)
+    pushHistory({ thread: target, revealCounts: nextRevealCounts })
     if (isPlaying) {
-      advance({ kind: "sub", participantId }, 0)
+      advance(target, 0)
     }
   }
 
@@ -732,8 +865,8 @@ export const useConversationPlayback = (
   )
 
   return {
-    /** How many messages (in order) of the MAIN thread should currently be rendered. */
-    revealCount,
+    /** How many messages (in order) of the currently active chat should currently be rendered. */
+    revealCount: activeThread.kind === "chat" ? revealCounts[activeThread.chatId] ?? 0 : 0,
     /** senderId of whoever is "typing" right now, or null. */
     typingSenderId,
     /**
@@ -756,6 +889,10 @@ export const useConversationPlayback = (
     stepForward,
     /** Hides the last revealed message and freezes there. */
     stepBack,
+    /** Jumps straight to the end of the story, like seeking a video to its last frame. */
+    jumpToEnd,
+    /** Jumps straight back to the very first frame. */
+    jumpToStart,
     /** Whether stepBack() would currently do anything. */
     canStepBack: stepState.canStepBack,
     /** Whether stepForward() would currently do anything. */
@@ -764,15 +901,13 @@ export const useConversationPlayback = (
     bannerMessage,
     /** Whether the banner should be in its "shown" (vs sliding out) state. */
     bannerVisible,
-    /** Which chat ("main" or a participant's side-chat) is currently active. */
+    /** Which chat is currently active - a real chat id, or the simulated home screen. */
     activeThread,
-    /** How many messages of the currently-open side-chat should be rendered. */
-    subRevealCount,
-    /** Opens (and starts playing) the side-chat linked to a tapped notification. */
+    /** Opens (and starts playing) the chat linked to a tapped notification. */
     openLinkedConversation,
     /** Leaves the currently open chat for the simulated home (chat list) screen. */
     goHome,
-    /** Opens the side-chat for a contact tapped on the home screen. */
+    /** Opens the chat for a contact tapped on the home screen. */
     openFromHome,
   }
 }
