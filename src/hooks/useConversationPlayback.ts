@@ -405,8 +405,22 @@ export const useConversationPlayback = (
     }
     const msgs = chatsRef.current[thread.chatId] ?? []
     if (index >= msgs.length) {
-      setIsPlaying(false)
-      setIsPaused(false)
+      // If the message that just ended this chat is itself configured to
+      // auto-leave for the home screen (backNavigation.autoOpen), don't
+      // flip isPlaying off here - MainLayout's auto-open timer is gated on
+      // isPlaying staying true, and killing it the instant the chat runs
+      // out of messages would race that timer and cancel it before it
+      // ever fires (this is especially likely for own-text messages,
+      // whose restMs is always 0, so this branch runs almost immediately
+      // after the message is revealed).
+      const lastMessage = msgs[msgs.length - 1]
+      const willAutoLeaveForHome = Boolean(
+        lastMessage?.backNavigation?.enabled && lastMessage.backNavigation?.autoOpen,
+      )
+      if (!willAutoLeaveForHome) {
+        setIsPlaying(false)
+        setIsPaused(false)
+      }
       setTypingSenderId(null)
       setTypingDraftText(null)
       runningPhaseRef.current = null
