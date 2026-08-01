@@ -726,6 +726,63 @@ export const MainLayout = () => {
   const quickPresetIds = new Set(["iphone-14-pro", "ipad", "desktop"])
   const quickPresets: SizePreset[] = sizePresets.filter((preset) => quickPresetIds.has(preset.id))
 
+  // OBS/kiosk capture mode: load the app with `?obs=1` and only the raw
+  // phone-sized preview is rendered - no toolbar, editor sidebar, or scaling
+  // wrapper. Point an OBS Browser Source at this URL and set its width/height
+  // to exportSettings.width / exportSettings.height (393x852 by default) to
+  // capture the preview 1:1 with no black bars or cropping needed.
+  const isObsMode =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("obs") === "1"
+
+  if (isObsMode) {
+    return (
+      <div
+        style={{
+          width: exportSettings.width,
+          height: exportSettings.height,
+          position: "relative",
+          overflow: "hidden",
+          background: "transparent",
+        }}
+      >
+        <ChatLayout
+          conversation={playbackConversation}
+          layout={layout}
+          theme={theme}
+          showChrome={ui.showChrome}
+          activeParticipantId={activeParticipantId}
+          backgroundImageUrl={backgroundImageUrl}
+          backgroundImageOpacity={backgroundImageOpacity}
+          backgroundColor={backgroundColor}
+          conversationMode="scroll"
+          conversationContainerRef={previewConversationRef}
+          conversationContentRef={previewConversationContentRef}
+          typingSenderId={typingSenderId}
+          typingDraftText={typingDraftText}
+          screen={activeThread.kind === "home" ? "home" : "chat"}
+          homeChats={homeChats}
+          homePreviews={homePreviews}
+          onSelectHomeChat={openFromHome}
+          onBack={canGoHome ? handleBack : undefined}
+        />
+        {ui.showNotificationBanner && bannerMessage ? (
+          <NotificationBanner
+            platform={notificationPlatformForLayout(layout.id)}
+            appName={bannerAppName}
+            appColor={theme.colors.accent}
+            senderName={bannerSenderName}
+            messageText={bannerMessage.type === "image" ? "Sent a photo" : bannerMessage.content}
+            avatarUrl={bannerAvatarUrl}
+            visible={bannerVisible}
+            clickable={Boolean(bannerMessage.notificationClickable)}
+            onClick={handleBannerClick}
+            isOpening={isOpeningChatFromBanner}
+          />
+        ) : null}
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-slate-200">
       <div className="mx-auto flex flex-col gap-6 px-4 pt-6 pb-24 lg:pb-6">
