@@ -968,7 +968,7 @@ export const MainLayout = () => {
                       }}
                     >
                       <div
-                        className="absolute left-0 top-0"
+                        className="absolute left-0 top-0 shadow-[0_0_0_1px_rgba(0,0,0,0.18),0_18px_40px_-12px_rgba(0,0,0,0.35)]"
                         style={{
                           width: exportSettings.width,
                           height: exportSettings.height,
